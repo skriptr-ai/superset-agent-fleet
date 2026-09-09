@@ -43,7 +43,14 @@ const STATE_PATH =
     ? null
     : (process.env.AGENT_FLEET_STATE ?? join(homedir(), '.superset', 'agent-fleet.json'));
 
-const world = new World(STATE_PATH);
+// Where `bin/superset-send` writes what it sent. The default matches the wrapper's own, so an
+// orchestrator that uses it is picked up with nothing to configure on either side.
+const LOG_PATH =
+  process.env.AGENT_FLEET_LOG === ''
+    ? null
+    : (process.env.AGENT_FLEET_LOG ?? join(homedir(), '.superset', 'agent-fleet.jsonl'));
+
+const world = new World(STATE_PATH, LOG_PATH);
 await world.load();
 const clients = new Set();
 let latest = {
@@ -54,6 +61,7 @@ let latest = {
   links: [],
   hubIds: [],
   error: null,
+  logError: null,
 };
 const history = [];
 

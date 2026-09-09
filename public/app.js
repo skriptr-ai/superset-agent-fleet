@@ -421,7 +421,13 @@ function renderHeader(snapshot) {
   const count = (status) => agents.filter((a) => a.status === status).length;
   const waiting = count('waiting');
   els.live.className = `live ${snapshot.error ? 'bad' : 'on'}`;
-  els.live.title = snapshot.error ? `CLI error: ${snapshot.error}` : `live · tick ${snapshot.tick}`;
+  const trouble = [
+    snapshot.error ? `CLI error: ${snapshot.error}` : '',
+    // A broken fleet log is not fatal — screens still carry the world — but it is silent
+    // under-reporting unless it is said out loud somewhere.
+    snapshot.logError ? `fleet log: ${snapshot.logError}` : '',
+  ].filter(Boolean);
+  els.live.title = trouble.length ? trouble.join(' · ') : `live · tick ${snapshot.tick}`;
   // The handle doubles as the status line: how many, how many busy, and whether anyone needs you.
   els.handleText.innerHTML = `<b>${agents.length}</b> agents · ${count('working')} working${
     waiting ? ` · <span class="warn">${waiting} waiting on you</span>` : ''

@@ -80,8 +80,13 @@ drawer · `F` refits · `R` hides check-ins. Clicking the floor changes nothing.
 
 Everything comes from the `superset` CLI — `workspaces list`, `terminals list`, `terminals
 read` — polled every 2.5 s while a page is open. The CLI has no message history, only terminal
-buffers, so traffic is **reconstructed** from three places:
+buffers, so traffic is **reconstructed** from four places, the first of them exact and the rest
+inferred:
 
+0. **The fleet log**, when an orchestrator sends through `bin/superset-send` — a drop-in for
+   `superset terminals send` that appends one line per message before handing your arguments to
+   the real CLI. Sender, recipient and the complete text, with nothing depending on what its
+   harness left on screen. See [Making an orchestrator visible](#making-an-orchestrator-visible).
 1. **An orchestrator's own screen** logs every `superset` command it ran, including
    `terminals send --text '…'`. This is the exact source, and where the message text comes
    from. Long commands are elided on screen as `… +11 lines`, so a message often arrives as its
@@ -98,6 +103,48 @@ buffers, so traffic is **reconstructed** from three places:
    call: the receiving half of the same message, usually with more of the text.
 3. **Status flips** (idle→working, working→idle) as a fallback, so the room still moves when a
    command has scrolled off the orchestrator's screen.
+
+### Making an orchestrator visible
+
+Reading commands off a screen fails in one way no parser can fix. An orchestrator with several
+workers writes the shell anyone would write:
+
+```bash
+while IFS=$'\t' read -r task ws term; do
+  superset terminals send --workspace "$ws" --terminal "$term" --text "$(cat briefs/$task.md)"
+done < workers.tsv
+```
+
+Every one of those sends reaches the screen as `--workspace "$ws"`. The id was resolved in a
+shell nothing else can see, so the message has no recipient — not truncated, not scrolled away,
+genuinely absent. A real orchestration of seven workers sent all seven briefs this way and
+appeared as no orchestrator at all.
+
+`bin/superset-send` closes it from the other end. The shell expands `"$ws"` before the wrapper
+runs, so the real id is always what gets recorded:
+
+```bash
+superset-send --workspace <workspace-id> --terminal <terminal-id> --text "<message>"
+```
+
+Same flags, same exit code, and nothing is written if the send fails. It records the sender
+exactly, from `SUPERSET_WORKSPACE_ID`, which is the one thing a screen can never say for
+certain. `service/install.sh` symlinks it into `~/.claude/skills/superset/bin`, already on PATH
+inside every Superset workspace.
+
+Agents will not do this unprompted, so the repo also ships a skill that tells them to:
+`plugins/agent-fleet/`. Add this repo as a marketplace and install it, on this machine and on
+any host that runs orchestrators:
+
+```bash
+superset plugins marketplace add skriptr-ai/superset-agent-fleet
+superset plugins install agent-fleet
+```
+
+The log lives at `~/.superset/agent-fleet.jsonl` (`AGENT_FLEET_LOG` to move it, `''` to ignore
+it). It is only ever read forward: whatever is already in the file when the server starts is
+skipped, because the screens are already the source of history and replaying the file would
+double every count.
 
 A waiter is only sent for a table a chef has actually been observed driving, and it collects
 from that chef. A status flip in some unrelated workspace just moves that diner between the line
@@ -189,13 +236,16 @@ send` and the election happens.
 
 ```
 server.js                     Bun HTTP server: poll loop, SSE stream, static files
+bin/superset-send             `terminals send` that also records what it sent
 lib/superset.js               the CLI wrapper
+lib/fleetlog.js               reads what bin/superset-send recorded
 lib/parse.js                  terminal screen -> status, model, last utterance, CLI calls
 lib/world.js                  the fleet as state, the per-tick diff that becomes events
 public/draw.js                the room, the furniture and the people, as pixel art drawn from code
 public/scene.js               seating, waiter orders and pathfinding, the chefs, the camera
 public/app.js                 SSE wiring, the project filter, the drawer with cards and threads
 service/                      the launchd agent and its install/uninstall scripts
+plugins/agent-fleet/          the skill that tells orchestrators to use the wrapper
 ```
 
 ## Limits worth knowing
@@ -203,10 +253,13 @@ service/                      the launchd agent and its install/uninstall script
 - A terminal buffer is finite. Once a command scrolls out of the terminal's own history the
   view no longer knows about it; counts under-report over a long run, never over-report.
 - A **Claude** terminal has no scrollback to read: it draws on the alternate screen, so a read
-  returns only what is visible. Its commands are caught while they are on screen and no other
-  way, which makes a Claude orchestrator slower to be recognised than a Codex one and its
-  message counts lower than the truth. What has been seen is kept, so the picture fills in as
-  it works. Nothing here can be fixed by polling harder — the history is not there to read.
+  returns only what is visible, and the row holding a command is repainted by the next tool
+  call. Its commands are caught while they are on screen and no other way, which makes a Claude
+  orchestrator slower to be recognised than a Codex one and its message counts lower than the
+  truth. Nothing here is fixed by polling harder — the history is not there to read. Use
+  `bin/superset-send` and none of it applies.
+- An orchestrator that builds its commands from variables is invisible to the screen reader
+  entirely, whatever its harness. Same answer: `bin/superset-send`.
 - Worker replies in a thread come from status flips, so they carry the worker's last narration
   line, not a full reply. The live terminal underneath has the rest.
 - Agent chrome is parsed by pattern (`lib/parse.js`). A future Claude Code or Codex release that

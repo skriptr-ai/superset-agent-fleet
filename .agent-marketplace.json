@@ -1,0 +1,15 @@
+{
+  "name": "skriptr",
+  "plugins": [
+    {
+      "name": "agent-fleet",
+      "description": "Makes an orchestrator's messages visible to Superset Agent Fleet, whichever agent harness it runs in.",
+      "author": {
+        "name": "Skriptr"
+      },
+      "category": "development",
+      "source": "./plugins/agent-fleet",
+      "version": "0.1.0"
+    }
+  ]
+}

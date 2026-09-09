@@ -1,0 +1,19 @@
+{
+  "$schema": "https://superset.sh/schemas/plugin/1.0.0.json",
+  "name": "agent-fleet",
+  "version": "0.1.0",
+  "description": "Makes an orchestrator's messages visible to Superset Agent Fleet, whichever agent harness it runs in.",
+  "author": {
+    "name": "Skriptr"
+  },
+  "license": "MIT",
+  "extensions": {
+    "superset": {
+      "interface": {
+        "displayName": "Agent Fleet",
+        "category": "Developer tools",
+        "icon": "agent-fleet"
+      }
+    }
+  }
+}
