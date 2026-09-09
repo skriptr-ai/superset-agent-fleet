@@ -6,21 +6,27 @@ allowed-tools: Bash(superset:*), Bash(superset-send:*), Bash(curl:*), Bash(chmod
 
 # Sending so the fleet can see it
 
-Use `superset-send` in place of `superset terminals send`. Same flags, same behaviour, same
-exit code:
+**If you are driving the fleet through the Superset MCP tools** — `mcp__superset__terminals_send`
+and friends, in Claude Code — there is nothing to do. The fleet view reads those calls out of
+your session's own transcript, with the workspace id and the full message text intact. Stop
+here.
+
+Everything below is for sending from a **shell**. Use `superset-send` in place of
+`superset terminals send`. Same flags, same behaviour, same exit code:
 
 ```bash
 superset-send --workspace <workspace-id> --terminal <terminal-id> --text "<message>"
 ```
 
-That is the whole rule. Everything below is why it matters and what to do when the wrapper is
-not installed.
+That is the whole rule for a shell. The rest of this file is why it matters and what to do when
+the wrapper is not installed.
 
 ## Why not the plain command
 
 Superset Agent Fleet draws the fleet — who is orchestrating, who is working for whom, what was
 said — by reading each orchestrator's terminal screen and recovering the `superset` commands
-from it. There is no message history in the CLI to ask instead.
+from it. There is no message history in the CLI to ask instead. (An MCP call is read from the
+session transcript instead, which is why it needs none of this.)
 
 That works only when the command reaches the screen with a literal workspace id in it, and the
 natural way to brief several workers does not:

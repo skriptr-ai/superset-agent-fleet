@@ -22,7 +22,7 @@ export const ENTRANCE_X = 2; // the rope gap, the front door and the crossing al
 export const HOUSE_WALL_H = 72;
 
 /**
- * The alley between the two restaurants.
+ * The alley between two neighbouring restaurants.
  *
  * Five tiles, and the number is not arbitrary. In this projection the right-hand room is nearer
  * the camera, so its left wall rises in front of its neighbour's floor; at the same screen
@@ -145,9 +145,9 @@ export function buildDistrict({ houses = [], carts = [] } = {}) {
     d,
     houseDepth: rd,
     houses: plans,
-    // The alley between the rooms gets a surface of its own, so the gap reads as a gap rather
-    // than as a hole punched through the block.
-    alley: { from: plans[0].ox, to: blockEnd },
+    // The alleys between the rooms get a surface of their own, so a gap reads as a gap rather
+    // than as a hole punched through the block. With one restaurant there is no gap to floor.
+    alley: { from: plans[0]?.ox ?? 0, to: blockEnd },
     street,
     carts: stalls,
     props,

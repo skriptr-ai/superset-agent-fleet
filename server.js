@@ -50,7 +50,16 @@ const LOG_PATH =
     ? null
     : (process.env.AGENT_FLEET_LOG ?? join(homedir(), '.superset', 'agent-fleet.jsonl'));
 
-const world = new World(STATE_PATH, LOG_PATH);
+// Claude Code's own session transcripts, which are where an MCP-driven orchestrator's calls
+// are recorded — the terminal never sees them. `CLAUDE_CONFIG_DIR` is Claude's own override;
+// AGENT_FLEET_TRANSCRIPTS points somewhere else again, and '' switches the source off.
+const TRANSCRIPT_ROOT =
+  process.env.AGENT_FLEET_TRANSCRIPTS === ''
+    ? null
+    : (process.env.AGENT_FLEET_TRANSCRIPTS ??
+      join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'projects'));
+
+const world = new World(STATE_PATH, LOG_PATH, TRANSCRIPT_ROOT);
 await world.load();
 const clients = new Set();
 let latest = {
@@ -62,6 +71,7 @@ let latest = {
   hubIds: [],
   error: null,
   logError: null,
+  transcriptError: null,
 };
 const history = [];
 
