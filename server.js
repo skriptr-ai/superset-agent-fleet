@@ -20,6 +20,11 @@ const PUBLIC_DIR = join(HERE, 'public');
 const PORT = Number(process.env.AGENT_FLEET_PORT ?? 4400);
 const POLL_MS = Number(process.env.AGENT_FLEET_POLL_MS ?? 2500);
 
+// Each poll spawns a `superset` process per terminal. With nobody watching, that is work for
+// no one, so an unwatched server idles down to this and wakes the moment a page connects —
+// which is what lets it run as a login service without being a permanent tax on the machine.
+const IDLE_POLL_MS = Number(process.env.AGENT_FLEET_IDLE_POLL_MS ?? 20_000);
+
 // Enough backlog that a browser opened mid-run still sees the recent conversation, capped so a
 // long orchestration does not grow the process without bound.
 const EVENT_HISTORY = 1500;
@@ -62,6 +67,8 @@ function broadcast(payload) {
   }
 }
 
+let wake = () => {};
+
 async function pollForever() {
   for (;;) {
     const started = Date.now();
@@ -76,8 +83,17 @@ async function pollForever() {
       broadcast({ ...latest, agents: latest.agents, events: [] });
     }
     // Measure from the start of the poll: a slow tick should not also add its own delay.
-    const wait = Math.max(250, POLL_MS - (Date.now() - started));
-    await new Promise((resolve) => setTimeout(resolve, wait));
+    const interval = clients.size ? POLL_MS : IDLE_POLL_MS;
+    const wait = Math.max(250, interval - (Date.now() - started));
+    await new Promise((resolve) => {
+      const timer = setTimeout(resolve, wait);
+      // A page connecting mid-idle should not wait out the long interval.
+      wake = () => {
+        clearTimeout(timer);
+        resolve();
+      };
+    });
+    wake = () => {};
   }
 }
 
@@ -110,8 +126,10 @@ function streamEvents() {
       };
       clients.add(client);
       // A browser that connects between ticks would otherwise stare at an empty world for a
-      // full poll interval, so replay the last snapshot plus the recent event log immediately.
+      // full poll interval, so replay the last snapshot plus the recent event log immediately,
+      // and pull the poller out of its idle wait.
       client.send({ ...latest, events: history });
+      wake();
     },
     cancel() {
       clients.delete(client);
@@ -135,6 +153,7 @@ async function handle(request) {
       ok: true,
       tick: latest.tick,
       agents: latest.agents.length,
+      watchers: clients.size,
     });
   }
   if (pathname === '/api/terminal') {
