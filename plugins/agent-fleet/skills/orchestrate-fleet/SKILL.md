@@ -50,16 +50,17 @@ Check once at the start of an orchestration, and install it if it is not there:
 
 ```bash
 command -v superset-send >/dev/null || {
-  mkdir -p ~/.claude/skills/superset/bin
-  curl -fsSL https://raw.githubusercontent.com/skriptr-ai/superset-agent-fleet/agent-fleet@0.1.0/bin/superset-send \
-    -o ~/.claude/skills/superset/bin/superset-send
-  chmod +x ~/.claude/skills/superset/bin/superset-send
+  mkdir -p ~/.local/bin
+  curl -fsSL https://raw.githubusercontent.com/skriptr-ai/superset-agent-fleet/agent-fleet@0.1.1/bin/superset-send \
+    -o ~/.local/bin/superset-send
+  chmod +x ~/.local/bin/superset-send
 }
 ```
 
-`~/.claude/skills/superset/bin` is already on PATH inside a Superset workspace. On a host where
-the repository is checked out, symlinking `bin/superset-send` from it works just as well and
-keeps a single copy.
+If `~/.local/bin` turns out not to be on PATH, `~/.claude/skills/superset/bin` always is inside
+a Superset workspace — but it is Superset's own directory and an update may clear it, so treat
+it as the fallback rather than the home. On a host where the repository is checked out,
+`service/install.sh` puts the wrapper in both and you need none of this.
 
 The URL is pinned to this plugin's own release tag rather than to a branch, so what you install
 is the wrapper this skill was written against. A fix to the wrapper ships as a version bump.
