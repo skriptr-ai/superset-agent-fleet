@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Superset Agent Fleet</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <header>
+      <h1><i id="live" class="live" title="connecting…"></i>Superset Agent Fleet</h1>
+      <nav id="projects" class="projects" aria-label="Project filter"></nav>
+    </header>
+
+    <main>
+      <canvas id="world"></canvas>
+
+      <button id="handle" class="handle" type="button" aria-controls="drawer" aria-expanded="false">
+        <span class="chev">›</span>
+        <span id="handle-text">Agents</span>
+      </button>
+
+      <aside id="drawer" class="drawer" aria-hidden="true">
+        <div class="drawer-head">
+          <span id="drawer-title">Agents</span>
+          <button id="close" type="button" aria-label="Close">✕</button>
+        </div>
+        <div id="panel"></div>
+        <p class="keys">
+          <kbd>Esc</kbd> close · <kbd>S</kbd> panel · <kbd>F</kbd> fit · <kbd>R</kbd> check-ins ·
+          <kbd>+</kbd><kbd>−</kbd> zoom
+        </p>
+      </aside>
+    </main>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,12 @@
+{
+  "name": "superset-agent-fleet",
+  "private": true,
+  "type": "module",
+  "description": "A pixel-art restaurant that shows a Superset agent fleet at work: the orchestrator as the chef, workers at the tables, every message carried by a waiter.",
+  "scripts": {
+    "start": "bun server.js",
+    "dev": "bun --watch server.js",
+    "format": "prettier --write .",
+    "check": "prettier --check ."
+  }
+}
