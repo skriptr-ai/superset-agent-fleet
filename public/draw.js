@@ -1,10 +1,9 @@
 // Pixel art for the restaurant: the room, the furniture and the people.
 //
-// Everything here is drawn at 1× into a small buffer with integer coordinates, and the scene
-// blits that buffer up with nearest-neighbour scaling. That is what makes it read as pixel
-// art rather than as vector shapes: every line is a whole pixel wide and every zoom level is
-// a whole multiple. Figures are hand-built maps — one character per pixel — so a shirt colour
-// or a chef's hat is a palette swap, not a new drawing.
+// Everything here is drawn with whole-pixel coordinates in world units, onto a canvas the
+// scene has already scaled to the current zoom. Figures are hand-built character maps — one
+// character per pixel — so a shirt colour or a chef's hat is a palette swap and not a new
+// drawing. The exterior half of the world is in street.js and shares these primitives.
 
 export const TILE_W = 32; // one floor tile, in world units: a 2:1 diamond. One unit is one
 // pixel of the art; the camera scales the whole canvas, so a unit is as many screen pixels
@@ -39,7 +38,7 @@ export const KIND_COLOR = {
   waiting: '#ffbf47',
 };
 
-const C = {
+export const C = {
   outline: '#1e1a1a',
   skin: '#f0c9a4',
   skinShade: '#d9a97f',
@@ -81,13 +80,13 @@ const C = {
 
 // ── pixel primitives ─────────────────────────────────────────────────────────────────────────
 
-function px(ctx, x, y, color, w = 1, h = 1) {
+export function px(ctx, x, y, color, w = 1, h = 1) {
   ctx.fillStyle = color;
   ctx.fillRect(Math.round(x), Math.round(y), w, h);
 }
 
 /** Draw a character map at (x, y) = top-left, with a palette mapping map chars to colours. */
-function blitMap(ctx, map, x, y, palette, flip = false) {
+export function blitMap(ctx, map, x, y, palette, flip = false) {
   const w = map[0].length;
   for (let r = 0; r < map.length; r++) {
     const row = map[r];
@@ -156,26 +155,6 @@ export function isoBox(ctx, x, y, w, d, h, top, right, left, z = 0) {
 
 // ── the room ─────────────────────────────────────────────────────────────────────────────────
 
-export function floor(ctx, w, d, kitchenRows, lobbyFrom) {
-  for (let x = 0; x < w; x++) {
-    for (let y = 0; y < d; y++) {
-      const kitchen = y < kitchenRows;
-      const lobby = y >= lobbyFrom;
-      const even = (x + y) % 2 === 0;
-      let fill = even ? C.floorA : C.floorB;
-      let line = C.floorLine;
-      if (kitchen) {
-        fill = even ? C.kitchenA : C.kitchenB;
-        line = '#b9c3cc';
-      } else if (lobby) {
-        fill = even ? '#6b3f4a' : '#623943';
-        line = '#4f2e37';
-      }
-      floorTile(ctx, x, y, fill, line);
-    }
-  }
-}
-
 /** A brass post with a red velvet rope to the previous post — the line between lobby and floor. */
 export function ropePost(ctx, x, y, prev) {
   const p = iso(x, y);
@@ -218,11 +197,14 @@ export function doormat(ctx, x, y) {
   ctx.fill();
 }
 
-/** The two back walls, meeting at tile (0,0), with wallpaper and a skirting board. */
-export function walls(ctx, w, d, height) {
-  const origin = iso(0, 0);
-  const leftEnd = iso(0, d);
-  const rightEnd = iso(w, 0);
+/**
+ * The two back walls of a room whose left edge is at `ox`, meeting at tile (ox, 0), with
+ * wallpaper and a skirting board. Only ever drawn for a house whose roof is off.
+ */
+export function walls(ctx, ox, w, d, height) {
+  const origin = iso(ox, 0);
+  const leftEnd = iso(ox, d);
+  const rightEnd = iso(ox + w, 0);
   const thickness = 6;
 
   const wallFace = (from, to, dir) => {
@@ -279,9 +261,9 @@ export function walls(ctx, w, d, height) {
   ctx.fill();
 }
 
-export function wallPicture(ctx, x, y, side, z, t) {
-  // A framed picture hung on the left (side=-1, along the x=0 wall) or right wall.
-  const p = side < 0 ? iso(0, y) : iso(x, 0);
+export function wallPicture(ctx, ox, x, y, side, z, t) {
+  // A framed picture hung on the left (side=-1, along the x=ox wall) or right wall.
+  const p = side < 0 ? iso(ox, y) : iso(x, 0);
   const w = 22;
   const dx = side < 0 ? -1 : 1;
   ctx.fillStyle = C.woodDark;
@@ -305,8 +287,8 @@ export function wallPicture(ctx, x, y, side, z, t) {
   ctx.fill();
 }
 
-export function wallLamp(ctx, x, y, side, z, t) {
-  const p = side < 0 ? iso(0, y) : iso(x, 0);
+export function wallLamp(ctx, ox, x, y, side, z, t) {
+  const p = side < 0 ? iso(ox, y) : iso(x, 0);
   const flick = Math.sin(t / 300 + x + y) > -0.9;
   px(ctx, p.x - 2, p.y - z, C.woodDark, 5, 3);
   px(ctx, p.x - 4, p.y - z - 8, '#ffe9a8', 9, 8);
@@ -417,8 +399,8 @@ export function stove(ctx, x, y, cooking, t) {
   }
 }
 
-export function shelf(ctx, x, y, side, z) {
-  const p = side < 0 ? iso(0, y) : iso(x, 0);
+export function shelf(ctx, ox, x, y, side, z) {
+  const p = side < 0 ? iso(ox, y) : iso(x, 0);
   const dx = side < 0 ? -1 : 1;
   ctx.fillStyle = C.woodDark;
   ctx.beginPath();
@@ -557,7 +539,7 @@ const SKINS = ['#f0c9a4', '#e0b48e', '#c48a5a', '#8d5a3a', '#f6dcc2'];
 export const HAIR_STYLES = ['short', 'long', 'spiky', 'bun', 'cap', 'bald'];
 
 /** A stable small hash so an agent looks the same every time it walks in. */
-function hash(str) {
+export function hash(str) {
   let h = 2166136261;
   for (let i = 0; i < str.length; i++) h = Math.imul(h ^ str.charCodeAt(i), 16777619);
   return h >>> 0;
@@ -573,10 +555,12 @@ export function lookFor(id) {
   return {
     body: SHIRTS[h % SHIRTS.length],
     trim: shade(SHIRTS[h % SHIRTS.length], -30),
-    pants: TROUSERS[(h >> 4) % TROUSERS.length],
-    hair: HAIRS[(h >> 8) % HAIRS.length],
-    skin: SKINS[(h >> 12) % SKINS.length],
-    style: HAIR_STYLES[(h >> 16) % HAIR_STYLES.length],
+    // Unsigned shifts: `hash` fills all 32 bits, and a signed shift of a high hash lands on a
+    // negative index, which is an agent with no trousers.
+    pants: TROUSERS[(h >>> 4) % TROUSERS.length],
+    hair: HAIRS[(h >>> 8) % HAIRS.length],
+    skin: SKINS[(h >>> 12) % SKINS.length],
+    style: HAIR_STYLES[(h >>> 16) % HAIR_STYLES.length],
   };
 }
 
