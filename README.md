@@ -1,12 +1,13 @@
 # Superset Agent Fleet
 
 A Habbo-style pixel-art restaurant that shows your [Superset](https://superset.sh) agent fleet
-at work. The orchestrator is the chef in the kitchen; the agents it drives are the diners at the
-tables; idle sessions queue at the door; and every message is carried by a waiter — a dish out
-to a table when the chef sends one, a note back to the pass when a diner finishes a turn.
+at work. Every orchestrator is a chef, side by side in the one kitchen; the agents each one
+drives are the diners at the tables; idle sessions queue at the door; and every message is
+carried by a waiter — a dish out to a table when a chef sends one, a note back to that chef's
+pass when its diner finishes a turn.
 
 It reads the fleet through the `superset` CLI and nothing else, so it can only ever show a state
-the orchestrator could itself have observed.
+an orchestrator could itself have observed.
 
 ## Requirements
 
@@ -46,17 +47,17 @@ background, prints the URL, and exits 0 if one is already up.
 
 ## What you are looking at
 
-| In the restaurant                                   | What it means                                                                                                                                                                                                                                                                                      |
-| --------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| The chef behind the counter                         | The orchestrator. Stirring the pot with steam rising = mid-turn; holding a dish out over the pass = a message just went out. Hover for its name                                                                                                                                                    |
-| The three waiters at the card table beside the chef | The delivery crew, playing poker until there is an order. One collects a dish from the chef, carries it out through the gate to the table, and comes back to the game; a report goes the other way — out to the table for the note, back to the chef with it. Orders queue while all three are out |
-| A diner at a table                                  | An agent mid-turn (food on the plate, fork going) or waiting on **you** (arm up, service bell, bouncing `!`)                                                                                                                                                                                       |
-| The line at the door                                | Idle agents. The newest arrival stands at the front, by the maître d's podium; when one starts working it walks through the gap in the rope to its table, and when it stops it walks back to the head of the line                                                                                  |
-| Tables nearest the kitchen                          | The orchestrator's workers, most recently served nearest the middle. A table is assigned once and kept for the whole run                                                                                                                                                                           |
-| Tables further back                                 | Every other agent session on this machine                                                                                                                                                                                                                                                          |
-| Label over a head                                   | Issue key and name (`PT-559 concurrent channel switch`), the harness (Claude's spark, Codex's ring), status, and `✉ n` messages exchanged. Zoomed out, people in the line show a name only on hover                                                                                                |
-| The pills in the top bar                            | Filter to one Superset project, or to the ad-hoc sessions that have none. The room re-seats to the filtered party; the choice is remembered                                                                                                                                                        |
-| Speech bubbles                                      | A message, where it landed, headed by who sent it to whom (`PT-534 ← chef`). Several arriving together stack. The strip at the bottom of the room shows the same text in full                                                                                                                      |
+| In the restaurant                                    | What it means                                                                                                                                                                                                                                                                                                                                                           |
+| ---------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A chef behind the counter                            | An orchestrator. Stirring the pot with steam rising = mid-turn; holding a dish out over the pass = a message just went out. Hover for its name. Run two orchestrations at once and you get two chefs, each at its own stove and pass along the same counter                                                                                                             |
+| The three waiters at the card table beside the chefs | The delivery crew, playing poker until there is an order. One collects a dish from the chef that sent it, carries it out through the gate to the table, and comes back to the game; a report goes the other way — out to the table for the note, back to that chef with it. The three are shared across every kitchen station, and orders queue while all three are out |
+| A diner at a table                                   | An agent mid-turn (food on the plate, fork going) or waiting on **you** (arm up, service bell, bouncing `!`)                                                                                                                                                                                                                                                            |
+| The line at the door                                 | Idle agents. The newest arrival stands at the front, by the maître d's podium; when one starts working it walks through the gap in the rope to its table, and when it stops it walks back to the head of the line                                                                                                                                                       |
+| Tables nearest the kitchen                           | The chefs' workers, most recently served nearest the middle. A table is assigned once and kept for the whole run                                                                                                                                                                                                                                                        |
+| Tables further back                                  | Every other agent session on this machine                                                                                                                                                                                                                                                                                                                               |
+| Label over a head                                    | Issue key and name (`PT-559 concurrent channel switch`), the harness (Claude's spark, Codex's ring), status, and `✉ n` messages exchanged. Zoomed out, people in the line show a name only on hover                                                                                                                                                                     |
+| The pills in the top bar                             | Filter to one Superset project, or to the ad-hoc sessions that have none. The room re-seats to the filtered party; the choice is remembered                                                                                                                                                                                                                             |
+| Speech bubbles                                       | A message, where it landed, headed by who sent it to whom (`PT-534 ← chef`, or `PT-534 ← chef PT-600` when more than one is cooking). Several arriving together stack. The strip at the bottom of the room shows the same text in full                                                                                                                                  |
 
 Whether someone is at a table or in the line is the whole status story; the one thing that
 gets an extra signal is waiting on **you**. Everyone's outfit — shirt, trousers, hair, skin —
@@ -81,24 +82,43 @@ Everything comes from the `superset` CLI — `workspaces list`, `terminals list`
 read` — polled every 2.5 s while a page is open. The CLI has no message history, only terminal
 buffers, so traffic is **reconstructed** from three places:
 
-1. **The orchestrator's own scrollback** logs every `superset` command it ran, including
+1. **An orchestrator's own screen** logs every `superset` command it ran, including
    `terminals send --text '…'`. This is the exact source, and where the message text comes
    from. Long commands are elided on screen as `… +11 lines`, so a message often arrives as its
-   opening sentence with a trailing `…` — that is the screen's limit, not a bug. The whole
-   buffer is read on every tick, so a command is only missed once it has scrolled out of the
-   terminal's own history.
+   opening sentence with a trailing `…` — that is the screen's limit, not a bug.
+
+   How much history that gives depends on the harness. **Codex** writes into the normal buffer,
+   so a read returns a thousand lines of scrollback and a command is only missed once it has
+   scrolled out of the terminal's own history. **Claude Code** draws on the alternate screen,
+   which has no scrollback at all: a read returns the ~50 visible lines, and a command is only
+   readable while it is still on screen. That is why the poll is fast and why the evidence is
+   cumulative — see the election below.
+
 2. **A worker's queued-messages block**, which Codex prints verbatim while it finishes a tool
    call: the receiving half of the same message, usually with more of the text.
 3. **Status flips** (idle→working, working→idle) as a fallback, so the room still moves when a
    command has scrolled off the orchestrator's screen.
 
-A waiter is only sent for a table the orchestrator has actually been observed driving. A status
-flip in some unrelated workspace just moves that diner between the line and its table; it never
-invents a sender.
+A waiter is only sent for a table a chef has actually been observed driving, and it collects
+from that chef. A status flip in some unrelated workspace just moves that diner between the line
+and its table; it never invents a sender.
 
-The orchestrator is **elected**, not configured: whichever workspace is observed driving the
-most distinct peers wins. Before any traffic has been seen, a workspace named `orchestrat*` is
-used as a cold-start guess.
+Orchestrators are **elected**, not configured, there can be any number of them at once, and the
+evidence accumulates across polls rather than being re-derived from each screen. A workspace
+becomes a chef when either holds:
+
+- It has been seen **commanding two or more distinct peers** (`terminals send`, `terminals
+create`). Reads do not count. Looking at a screen is what a curious human, a status sweep or
+  this very tool does, and two check-ins should not hand anyone a kitchen.
+- **Two or more distinct peers have been seen commanding it**, and nobody is commanding it in
+  turn. This is the same fleet seen from the workers' end — their `terminals send --workspace
+<orchestrator>` reports — and it is what recovers an orchestrator whose own commands were
+  never caught on screen, which is the normal case for Claude. The second half of the test is
+  what stops it promoting a worker that its orchestrator and a neighbour both messaged.
+
+Before any traffic has been seen at all, workspaces named `orchestrat*` are used as a cold-start
+guess. Who commands whom is remembered in `~/.superset/agent-fleet.json`, so the evidence for a
+chef survives a restart even after its commands have repainted away.
 
 On start-up, whatever is already in each scrollback is counted in — seating, counts and threads
 are all there on the first tick — but marked `earlier` and never animated. Who-drives-whom is
@@ -158,8 +178,12 @@ service):
   holding just a shell is not shown, and archived workspaces are dropped.
 - **The room shows someone else's project** — the top-bar pills filter by project; the choice is
   remembered per browser.
-- **Nobody is the chef** — no session has been seen driving two others yet, and none is named
-  `orchestrat…`. Send a couple of `superset terminals send` and the election happens.
+- **Nobody is the chef** — no session has been seen commanding two others yet, none has had two
+  others report to it, and none is named `orchestrat…`. Send a couple of `superset terminals
+send` and the election happens.
+- **A second orchestrator has no chef** — it is commanding one worker so far, or its commands
+  have not been caught on screen yet. A Claude orchestrator has no scrollback, so its evidence
+  is gathered one poll at a time while it works; leave the page open and it appears.
 
 ## Layout of the code
 
@@ -169,7 +193,7 @@ lib/superset.js               the CLI wrapper
 lib/parse.js                  terminal screen -> status, model, last utterance, CLI calls
 lib/world.js                  the fleet as state, the per-tick diff that becomes events
 public/draw.js                the room, the furniture and the people, as pixel art drawn from code
-public/scene.js               seating, waiter orders and pathfinding, the chef, the camera
+public/scene.js               seating, waiter orders and pathfinding, the chefs, the camera
 public/app.js                 SSE wiring, the project filter, the drawer with cards and threads
 service/                      the launchd agent and its install/uninstall scripts
 ```
@@ -178,6 +202,11 @@ service/                      the launchd agent and its install/uninstall script
 
 - A terminal buffer is finite. Once a command scrolls out of the terminal's own history the
   view no longer knows about it; counts under-report over a long run, never over-report.
+- A **Claude** terminal has no scrollback to read: it draws on the alternate screen, so a read
+  returns only what is visible. Its commands are caught while they are on screen and no other
+  way, which makes a Claude orchestrator slower to be recognised than a Codex one and its
+  message counts lower than the truth. What has been seen is kept, so the picture fills in as
+  it works. Nothing here can be fixed by polling harder — the history is not there to read.
 - Worker replies in a thread come from status flips, so they carry the worker's last narration
   line, not a full reply. The live terminal underneath has the rest.
 - Agent chrome is parsed by pattern (`lib/parse.js`). A future Claude Code or Codex release that

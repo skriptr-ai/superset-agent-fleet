@@ -52,7 +52,7 @@ let latest = {
   agents: [],
   events: [],
   links: [],
-  hubId: null,
+  hubIds: [],
   error: null,
 };
 const history = [];

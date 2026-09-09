@@ -43,6 +43,8 @@ import {
 
 const WALL_H = 72;
 const KITCHEN_ROWS = 4; // y = 0..3 is the kitchen; the counter runs along y = 4
+/** Tiles from one chef's station to the next: its own tile, its stove, and air between them. */
+const CHEF_SPAN = 4;
 const COUNTER_Y = 4;
 const FIRST_TABLE_Y = 8;
 const TABLE_GAP = 4;
@@ -71,7 +73,9 @@ export class Scene {
     this.zoomTarget = null;
     this.zoomAnchor = null;
     this.agents = [];
-    this.hubId = null;
+    /** @type {string[]} the orchestrators, one chef each; @type {Set<string>} the same, to test */
+    this.hubIds = [];
+    this.hubSet = new Set();
     this.links = [];
     this.conns = new Map();
     this.room = null;
@@ -86,7 +90,11 @@ export class Scene {
     this.orders = [];
     this.hitboxes = [];
     this.glances = [];
-    this.chefPose = null;
+    /** @type {Map<string, object>} hubId → its current pose, and where its head is on screen */
+    this.chefPose = new Map();
+    this.chefAnchors = new Map();
+    /** @type {Map<string, number>} hubId → its station in the kitchen, kept across ticks */
+    this.chefSlot = new Map();
     this.hostPose = null;
     this.bubbles = new Map();
     this.toasts = [];
@@ -111,9 +119,10 @@ export class Scene {
 
   // ── world state ───────────────────────────────────────────────────────────────────────────
 
-  setWorld(agents, hubId, links) {
+  setWorld(agents, hubIds, links) {
     this.agents = agents;
-    this.hubId = hubId;
+    this.hubIds = (hubIds ?? []).filter((id) => agents.some((a) => a.id === id));
+    this.hubSet = new Set(this.hubIds);
     this.links = links ?? [];
     this.#indexLinks();
     this.#layout();
@@ -124,19 +133,31 @@ export class Scene {
   }
 
   /**
-   * One record per worker, both directions folded together. A worker is a diner the chef
-   * has DRIVEN — a link outbound from the hub. The reverse direction alone does not qualify:
-   * a session that merely read the orchestrator's screen is not one of its workers.
+   * One record per worker, both directions folded together, tagged with the chef it belongs to.
+   *
+   * A worker is a diner some chef has SERVED — a link carrying real traffic, in either
+   * direction. A session a chef has only ever read is not one of its workers: a check-in is
+   * something you can do to a stranger, and the room should not seat one as staff's own.
    */
   #indexLinks() {
     this.conns = new Map();
-    if (!this.hubId) return;
-    const driven = new Set(this.links.filter((l) => l.fromId === this.hubId).map((l) => l.toId));
+    if (!this.hubIds.length) return;
+    const served = (a, b) =>
+      this.links.some((l) => l.fromId === a && l.toId === b && l.sends + l.replies > 0);
     for (const link of this.links) {
-      const worker = link.fromId === this.hubId ? link.toId : link.fromId;
-      if (!driven.has(worker) || (link.fromId !== this.hubId && link.toId !== this.hubId)) continue;
+      const hubId = this.hubSet.has(link.fromId)
+        ? link.fromId
+        : this.hubSet.has(link.toId)
+          ? link.toId
+          : null;
+      if (!hubId) continue;
+      const worker = link.fromId === hubId ? link.toId : link.fromId;
+      // Chefs talking to each other are two chefs, not a chef and a diner.
+      if (this.hubSet.has(worker)) continue;
+      if (!served(hubId, worker) && !served(worker, hubId)) continue;
       const conn = this.conns.get(worker) ?? {
         workerId: worker,
+        hubId,
         sends: 0,
         reads: 0,
         replies: 0,
@@ -149,30 +170,47 @@ export class Scene {
       if (link.lastAt > conn.lastAt) {
         conn.lastAt = link.lastAt;
         conn.lastKind = link.lastKind;
+        conn.hubId = hubId; // whichever chef spoke to it last is the one it is sitting for
       }
       this.conns.set(worker, conn);
     }
   }
 
+  /** The kitchen station a chef is standing at, or null if it is not one of the chefs. */
+  #stationOf(hubId) {
+    const slot = this.chefSlot.get(hubId);
+    return slot === undefined ? null : (this.room?.stations[slot] ?? null);
+  }
+
   /**
-   * Build the room for a party of `capacity`: a kitchen at the back, tables four tiles apart,
-   * and a lobby along the front with the maître d's podium beside the gap in the rope.
+   * Build the room for a party of `capacity` served by `chefs` orchestrators: a kitchen at the
+   * back with one station per chef, tables four tiles apart, and a lobby along the front with
+   * the maître d's podium beside the gap in the rope.
+   *
+   * The kitchen is what sizes the room when the fleet is small and the orchestrators are many:
+   * every chef needs its own stove, its own pass to hand dishes over, and the waiters still
+   * need their card table at the end of the row.
    */
-  #buildRoom(capacity) {
+  #buildRoom(capacity, chefs) {
     const cols = Math.max(2, Math.ceil(Math.sqrt(capacity * 1.4)));
     const rows = Math.max(1, Math.ceil(capacity / cols));
-    const w = cols * TABLE_GAP + 3;
+    const kitchenW = CHEF_SPAN * chefs + 5; // a margin, a station each, the card table, a margin
+    const w = Math.max(cols * TABLE_GAP + 3, kitchenW);
     const lobbyY = FIRST_TABLE_Y + (rows - 1) * TABLE_GAP + 2;
     const d = lobbyY + 4;
     const gate = w - 2;
-    const chef = { x: Math.max(2, Math.floor(w / 2) - 2), y: 2 };
-    const station = { x: chef.x + 4, y: 1 };
+    // The row of stations is centred, so one chef stands where the single chef always stood.
+    const firstX = Math.max(2, Math.floor((w - CHEF_SPAN * chefs - 2) / 2));
+    const stations = Array.from({ length: chefs }, (_, i) => {
+      const x = firstX + i * CHEF_SPAN;
+      return { index: i, x, y: 2, stove: { x: x - 1, y: 2 }, pickup: { x, y: 3 } };
+    });
+    const station = { x: firstX + CHEF_SPAN * chefs, y: 1 };
     this.room = {
       w,
       d,
       gate,
-      chef,
-      pickup: { x: chef.x, y: 3 },
+      stations,
       station,
       // Around the card table, on its far sides, so the table hides their laps like a diner's.
       waiterSeats: [
@@ -215,13 +253,16 @@ export class Scene {
       if (x !== gate) block(x, COUNTER_Y);
       if (x !== ENTRANCE_X) block(x, lobbyY);
     }
-    block(chef.x - 1, chef.y);
-    block(chef.x, chef.y);
+    for (const st of stations) {
+      block(st.stove.x, st.stove.y);
+      block(st.x, st.y);
+    }
     block(station.x, station.y);
     block(this.room.podium.x, this.room.podium.y);
     block(this.room.host.x, this.room.host.y);
 
     this.capacity = capacity;
+    this.chefCount = chefs;
     this.tableOf = new Map();
     this.placement = new Map();
     this.queue = [];
@@ -259,19 +300,46 @@ export class Scene {
   }
 
   /**
+   * A station each, kept for as long as the chef is there. Whoever is already at a station
+   * that still exists stays put, so a second orchestrator arriving does not shuffle the first
+   * one down the kitchen; newcomers take the lowest free station.
+   */
+  #assignStations() {
+    for (const [id, slot] of this.chefSlot) {
+      if (!this.hubSet.has(id) || slot >= this.room.stations.length) this.chefSlot.delete(id);
+    }
+    const taken = new Set(this.chefSlot.values());
+    for (const id of this.hubIds) {
+      if (this.chefSlot.has(id)) continue;
+      const free = this.room.stations.findIndex((st) => !taken.has(st.index));
+      if (free === -1) break;
+      this.chefSlot.set(id, free);
+      taken.add(free);
+    }
+  }
+
+  /**
    * Seating and the queue. A table is assigned once and kept — nobody is moved between
    * tables mid-meal — with the chef's workers served first when the room is built. Idle
    * diners wait in line at the door; when one starts working it walks to its table, and when
    * it stops it walks back to the end of the line.
    */
   #layout() {
-    const guests = this.agents.filter((a) => a.id !== this.hubId);
+    const guests = this.agents.filter((a) => !this.hubSet.has(a.id));
     const alive = new Set(guests.map((a) => a.id));
-    // Rebuild when the party outgrows the room, or when it has shrunk enough (a project filter,
-    // say) that most tables would sit empty. Everyone is re-seated; that only happens here.
-    if (!this.room || guests.length > this.capacity || guests.length < this.capacity - 5) {
-      this.#buildRoom(guests.length + 2);
+    const chefs = Math.max(1, this.hubIds.length); // an empty kitchen still has a station in it
+    // Rebuild when the party outgrows the room, when it has shrunk enough (a project filter,
+    // say) that most tables would sit empty, or when a chef has arrived or left and the kitchen
+    // no longer has a station each. Everyone is re-seated; that only happens here.
+    if (
+      !this.room ||
+      guests.length > this.capacity ||
+      guests.length < this.capacity - 5 ||
+      this.chefCount !== chefs
+    ) {
+      this.#buildRoom(guests.length + 2, chefs);
     }
+    this.#assignStations();
     const fresh = this.placement.size === 0;
 
     for (const id of [...this.tableOf.keys()]) {
@@ -398,15 +466,17 @@ export class Scene {
     const door = { x: gate, y: COUNTER_Y };
     const hall = { x: gate, y: COUNTER_Y + 1 };
     for (const event of events) {
-      const fromHub = event.fromId === this.hubId;
-      const toHub = event.toId === this.hubId;
+      const fromHub = this.hubSet.has(event.fromId);
+      const toHub = this.hubSet.has(event.toId);
+      // Which kitchen this belongs to: an order is walked to the chef that sent or wants it.
+      const hubId = fromHub ? event.fromId : toHub ? event.toId : null;
       const worker = fromHub ? event.toId : toHub ? event.fromId : null;
-      const seat = worker ? this.#seatOf(worker) : null;
+      const seat = worker && !this.hubSet.has(worker) ? this.#seatOf(worker) : null;
       const readable = event.text && event.kind !== 'read' && event.kind !== 'dispatch';
 
       if (event.kind === 'read' && fromHub && seat) {
         if (this.showReads)
-          this.glances.push({ workerId: worker, start: now, until: now + GLANCE_MS });
+          this.glances.push({ hubId, workerId: worker, start: now, until: now + GLANCE_MS });
         continue;
       }
 
@@ -418,16 +488,17 @@ export class Scene {
             (wt) =>
               wt.task?.kind === 'send' && wt.task.workerId === worker && now - wt.task.since < 6000,
           );
-        if (!duplicate) this.orders.push({ kind: 'send', workerId: worker, event, since: now });
+        if (!duplicate)
+          this.orders.push({ kind: 'send', hubId, workerId: worker, event, since: now });
         continue;
       }
 
       if (event.kind === 'report' && toHub && seat) {
-        this.orders.push({ kind: 'report', workerId: worker, event, since: now });
+        this.orders.push({ kind: 'report', hubId, workerId: worker, event, since: now });
         continue;
       }
 
-      if (readable && event.toId && (this.tableOf.has(event.toId) || event.toId === this.hubId)) {
+      if (readable && event.toId && (this.tableOf.has(event.toId) || this.hubSet.has(event.toId))) {
         this.#say(event.toId, event, now);
       }
     }
@@ -446,8 +517,12 @@ export class Scene {
       if (!waiter) return;
       const order = this.orders.shift();
       const seat = this.#seatOf(order.workerId);
-      if (!seat) continue;
-      const { pickup, gate } = this.room;
+      const station = this.#stationOf(order.hubId);
+      // A chef that left the kitchen between the order and the waiter taking it has no pass
+      // to collect from; the dish is dropped rather than carried to somebody else's station.
+      if (!seat || !station) continue;
+      const { pickup } = station;
+      const { gate } = this.room;
       const door = { x: gate, y: COUNTER_Y };
       const serve = { x: seat.serveX, y: seat.serveY };
       const allow = new Set([
@@ -463,7 +538,10 @@ export class Scene {
               {
                 pause: HANDOFF_MS,
                 onStart: () =>
-                  (this.chefPose = { type: 'handoff', until: this.#now() + HANDOFF_MS }),
+                  this.chefPose.set(order.hubId, {
+                    type: 'handoff',
+                    until: this.#now() + HANDOFF_MS,
+                  }),
               },
               { path: walk(pickup, serve), carry: 'send' },
               { pause: SERVE_PAUSE_MS, deliverTo: order.workerId },
@@ -473,7 +551,7 @@ export class Scene {
               { path: walk(waiter.seat, serve) },
               { pause: PICKUP_MS },
               { path: walk(serve, pickup), carry: 'report' },
-              { pause: SERVE_PAUSE_MS, deliverTo: this.hubId },
+              { pause: SERVE_PAUSE_MS, deliverTo: order.hubId },
               { path: walk(pickup, waiter.seat) },
             ];
       if (legs.some((leg) => leg.path === null)) continue; // unreachable table: skip the order
@@ -509,8 +587,12 @@ export class Scene {
     const to = byId.get(event.toId);
     const tag = (agent) => {
       if (!agent) return 'someone';
-      if (agent.id === this.hubId) return 'chef';
-      return issueOf(agent.name, agent.branch).key ?? agent.name.slice(0, 18);
+      const key = issueOf(agent.name, agent.branch).key;
+      // With one kitchen "chef" is unambiguous; with two it has to say which one.
+      if (this.hubSet.has(agent.id)) {
+        return this.hubIds.length > 1 ? `chef ${key ?? agent.name.slice(0, 14)}` : 'chef';
+      }
+      return key ?? agent.name.slice(0, 18);
     };
     return event.kind === 'report' ? `${tag(from)}  →  ${tag(to)}` : `${tag(to)}  ←  ${tag(from)}`;
   }
@@ -617,7 +699,7 @@ export class Scene {
   }
 
   #tileOfAgent(id) {
-    if (id === this.hubId) return this.room.chef;
+    if (this.hubSet.has(id)) return this.#stationOf(id) ?? this.room.stations[0];
     const mover = this.movers.find((m) => m.role === 'diner' && m.id === id && m.pos);
     if (mover) return { x: Math.round(mover.pos.x), y: Math.round(mover.pos.y) };
     return this.placement.get(id)?.tile ?? null;
@@ -823,7 +905,7 @@ export class Scene {
   }
 
   #drawRoom(b, t, byId) {
-    const { w, d, gate, chef, lobbyY, entrance, podium, host } = this.room;
+    const { w, d, gate, lobbyY, entrance, podium, host } = this.room;
     void gate;
     floor(b, w, d, KITCHEN_ROWS, lobbyY + 1);
     walls(b, w, d, WALL_H);
@@ -840,11 +922,14 @@ export class Scene {
       if (x !== gate) add(x, COUNTER_Y, 5, () => counter(b, x, COUNTER_Y));
     add(gate, COUNTER_Y, 0, () => serviceBell(b, gate - 0.5, COUNTER_Y + 0.5, 18));
 
-    const hub = byId.get(this.hubId);
-    if (hub) {
+    this.chefAnchors = new Map();
+    for (const hubId of this.hubIds) {
+      const hub = byId.get(hubId);
+      const st = this.#stationOf(hubId);
+      if (!hub || !st) continue;
       const cooking = hub.status === 'working';
-      add(chef.x - 1, chef.y, 3, () => stove(b, chef.x - 1, chef.y, cooking, t));
-      add(chef.x, chef.y, 5, () => this.#drawChef(b, hub, t));
+      add(st.stove.x, st.stove.y, 3, () => stove(b, st.stove.x, st.stove.y, cooking, t));
+      add(st.x, st.y, 5, () => this.#drawChef(b, hub, st, t));
     }
     const { station } = this.room;
     add(station.x, station.y, 5, () => cardTable(b, station.x, station.y, t));
@@ -964,12 +1049,12 @@ export class Scene {
     this.#person(b, agent, m.pos.x, m.pos.y, { facing, flip, step: m.step ?? 0 }, 0);
   }
 
-  #drawChef(b, hub, t) {
-    const { chef } = this.room;
+  #drawChef(b, hub, station, t) {
     const pal = chefPalette(hub.id);
-    const pose = this.chefPose && t < this.chefPose.until ? this.chefPose : null;
-    const anchors = figure(b, chef.x, chef.y, pal, { facing: 'front', hat: 'chef' });
-    this.chefAnchors = anchors;
+    const held = this.chefPose.get(hub.id);
+    const pose = held && t < held.until ? held : null;
+    const anchors = figure(b, station.x, station.y, pal, { facing: 'front', hat: 'chef' });
+    this.chefAnchors.set(hub.id, anchors);
     this.#hit(hub.id, anchors, 12);
     b.fillStyle = '#e8e8e2';
     b.fillRect(anchors.headX - 4, anchors.handY - 2, 9, 9);
@@ -1043,8 +1128,8 @@ export class Scene {
   // ── screen-space overlays ─────────────────────────────────────────────────────────────────
 
   #headScreen(id) {
-    if (id === this.hubId && this.chefAnchors)
-      return this.#toScreen(this.chefAnchors.headX, this.chefAnchors.headY - 8);
+    const chef = this.chefAnchors.get(id);
+    if (chef) return this.#toScreen(chef.headX, chef.headY - 8);
     const a = this.anchorsOf?.get(id);
     return a ? this.#toScreen(a.headX, a.headY) : null;
   }
@@ -1053,7 +1138,7 @@ export class Scene {
     this.glances = this.glances.filter((g) => t < g.until);
     for (const glance of this.glances) {
       const to = this.#headScreen(glance.workerId);
-      const from = this.#headScreen(this.hubId);
+      const from = this.#headScreen(glance.hubId);
       if (!to || !from) continue;
       const k = (t - glance.start) / (glance.until - glance.start);
       ctx.save();
@@ -1168,10 +1253,12 @@ export class Scene {
       if (place.mode === 'queued' && !zoomedIn && focus !== id) continue;
       draw(agent, { x: head.x, y: head.y - 14 * k - 4 }, false, this.conns.get(id), !zoomedIn);
     }
-    const hub = byId.get(this.hubId);
-    const hubAt = this.#headScreen(this.hubId);
-    if (hub && hubAt && focus === hub.id)
-      draw(hub, { x: hubAt.x, y: hubAt.y - 14 * k - 6 }, true, null, false);
+    for (const hubId of this.hubIds) {
+      const hub = byId.get(hubId);
+      const hubAt = this.#headScreen(hubId);
+      if (hub && hubAt && focus === hubId)
+        draw(hub, { x: hubAt.x, y: hubAt.y - 14 * k - 6 }, true, null, false);
+    }
   }
 
   /** Habbo speech bubbles: white, black text, a little tail toward the speaker, stacked upward. */
