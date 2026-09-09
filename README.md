@@ -187,8 +187,9 @@ chef when either holds:
   `terminals send --workspace <orchestrator>` reports — and it is what recovers an orchestrator
   whose own commands were never caught on screen, which is the normal case for Claude.
 
-Before any traffic has been seen at all, workspaces named `orchestrat*` are used as a cold-start
-guess. Who commands whom is remembered in `~/.superset/agent-fleet.json`, so the evidence for a
+Before any traffic has been seen at all, one workspace named `orchestrat*` is used as a
+cold-start guess — one, however many match, because it is a guess from a name rather than
+evidence, and it is dropped as soon as a single real command is observed. Who commands whom is remembered in `~/.superset/agent-fleet.json`, so the evidence for a
 chef survives a restart even after its commands have repainted away.
 
 The browser keeps a fallback for a server that still elects only one: a second orchestrator
