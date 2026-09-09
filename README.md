@@ -64,6 +64,49 @@ open http://localhost:4400
 To run it just once instead — no service — use `./start.sh`: it starts the server in the
 background, prints the URL, and exits 0 if one is already up.
 
+## Set up an orchestrator host
+
+Only needed on a machine where **orchestrators run**, which may not be the machine showing the
+view — a VM running workers, a colleague's Mac. Two pieces, and they are independent of the
+server: install them and that host's orchestrators become visible in whoever's view is watching
+that fleet. Skip it and nothing breaks; that host's traffic is just read off screens instead,
+which is [best-effort and sometimes blind](#making-an-orchestrator-visible).
+
+**If the repo is checked out there**, `./service/install.sh` has already done the first half —
+it symlinks `bin/superset-send` into `~/.local/bin` and, when Superset's own directory exists,
+into `~/.claude/skills/superset/bin` as well. The second is on PATH inside every workspace but
+is Superset-managed, so an update may clear it; `~/.local/bin` is the one that persists. Add the
+skill by hand:
+
+```bash
+ln -s "$PWD/plugins/agent-fleet/skills/orchestrate-fleet" ~/.agents/skills/orchestrate-fleet
+```
+
+**If it is not checked out there**, take just the two files:
+
+```bash
+mkdir -p ~/.local/bin ~/.agents/skills/orchestrate-fleet
+base=https://raw.githubusercontent.com/skriptr-ai/superset-agent-fleet/agent-fleet@0.1.1
+curl -fsSL $base/bin/superset-send -o ~/.local/bin/superset-send
+chmod +x ~/.local/bin/superset-send
+curl -fsSL $base/plugins/agent-fleet/skills/orchestrate-fleet/SKILL.md \
+  -o ~/.agents/skills/orchestrate-fleet/SKILL.md
+```
+
+Check it took: `command -v superset-send`. If that comes back empty, `~/.local/bin` is not on
+that host's `PATH`.
+
+> **Why not `superset plugins install`?** That is what the plugin in `plugins/agent-fleet/` is
+> for, and it is the right answer once it works. Today `superset plugins install` records the
+> install but materialises no skills — `skills: 0`, `account sync failed`, and a
+> `Bundled plugin missing at /$bunfs/templates/plugin` warning. A plugin scaffolded by
+> Superset's own `plugins create --skills` behaves identically, so it is the CLI rather than
+> this plugin. Reported to Superset; until it is fixed, the symlink and the `curl` above are the
+> way. The wrapper half is unaffected either way.
+
+The skill only ever suggests; an orchestrator that ignores it falls back to being read off its
+screen. That is the floor, not the failure.
+
 ## What you are looking at
 
 | On the block                                        | What it means                                                                                                                                                                                                                                                                                      |
@@ -136,13 +179,13 @@ Orchestrators are **elected**, not configured, there can be several at once, and
 accumulates across polls rather than being re-derived from each screen. A workspace becomes a
 chef when either holds:
 
-- It has been seen **commanding two or more distinct peers** (`terminals send`, `terminals
-create`). Reads do not count. Looking at a screen is what a curious human, a status sweep or
-  this very tool does, and two check-ins should not hand anyone a kitchen.
+- It has been seen **commanding two or more distinct peers** (`terminals send`,
+  `terminals create`). Reads do not count. Looking at a screen is what a curious human, a
+  status sweep or this very tool does, and two check-ins should not hand anyone a kitchen.
 - **Two or more distinct peers have been seen commanding it**, and nobody is commanding it in
-  turn. This is the same fleet seen from the workers' end — their `terminals send --workspace
-<orchestrator>` reports — and it is what recovers an orchestrator whose own commands were
-  never caught on screen, which is the normal case for Claude.
+  turn. This is the same fleet seen from the workers' end — their
+  `terminals send --workspace <orchestrator>` reports — and it is what recovers an orchestrator
+  whose own commands were never caught on screen, which is the normal case for Claude.
 
 Before any traffic has been seen at all, workspaces named `orchestrat*` are used as a cold-start
 guess. Who commands whom is remembered in `~/.superset/agent-fleet.json`, so the evidence for a
@@ -176,17 +219,8 @@ superset-send --workspace <workspace-id> --terminal <terminal-id> --text "<messa
 
 Same flags, same exit code, and nothing is written if the send fails. It records the sender
 exactly, from `SUPERSET_WORKSPACE_ID`, which is the one thing a screen can never say for
-certain. `service/install.sh` symlinks it into `~/.claude/skills/superset/bin`, already on PATH
-inside every Superset workspace.
-
-Agents will not do this unprompted, so the repo also ships a skill that tells them to:
-`plugins/agent-fleet/`. Add this repo as a marketplace and install it, on this machine and on
-any host that runs orchestrators:
-
-```bash
-superset plugins marketplace add skriptr-ai/superset-agent-fleet
-superset plugins install agent-fleet
-```
+certain. Agents will not reach for it unprompted, so the repo ships a skill that tells them to.
+Installing both is [Set up an orchestrator host](#set-up-an-orchestrator-host) below.
 
 The log lives at `~/.superset/agent-fleet.jsonl` (`AGENT_FLEET_LOG` to move it, `''` to ignore
 it). It is only ever read forward: whatever is already in the file when the server starts is

@@ -18,12 +18,26 @@ superset="$(command -v superset || true)"
 path="$(dirname "$bun"):$(dirname "$superset"):/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
 
 # The wrapper that makes an orchestrator's messages visible whatever harness it runs in (see
-# bin/superset-send). Superset already puts this directory on PATH inside every workspace, so a
-# symlink is all it takes — and a symlink rather than a copy means `git pull` updates it too.
-wrapper_dir="$HOME/.claude/skills/superset/bin"
-mkdir -p "$wrapper_dir"
-ln -sf "$here/bin/superset-send" "$wrapper_dir/superset-send"
-echo "Wrapper installed: $wrapper_dir/superset-send -> $here/bin/superset-send"
+# bin/superset-send). Symlinks rather than copies, so `git pull` updates it too.
+#
+# It goes in two places on purpose. `~/.local/bin` is the real home: nothing else manages it,
+# so nothing else can take it away. `~/.claude/skills/superset/bin` is Superset's own, which
+# it puts on PATH inside every workspace — the guarantee we actually want — but it sits under
+# a `.superset-managed` marker, so an update or a plugin sync may clear it out. Installing to
+# both means losing that one costs the PATH guarantee and not the wrapper.
+install_wrapper() {
+  local dir="$1"
+  mkdir -p "$dir" 2>/dev/null || return 1
+  ln -sf "$here/bin/superset-send" "$dir/superset-send" 2>/dev/null || return 1
+  echo "  $dir/superset-send"
+}
+
+echo "Wrapper installed:"
+install_wrapper "$HOME/.local/bin" || true
+# Only if Superset has made the directory itself; do not create a tree inside someone else's.
+[[ -d "$HOME/.claude/skills/superset" ]] && { install_wrapper "$HOME/.claude/skills/superset/bin" || true; }
+
+command -v superset-send >/dev/null || echo "  note: no install directory is on your PATH; add ~/.local/bin to it"
 
 mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
 sed -e "s|__BUN__|$bun|g" -e "s|__REPO__|$here|g" -e "s|__PATH__|$path|g" -e "s|__HOME__|$HOME|g" \
