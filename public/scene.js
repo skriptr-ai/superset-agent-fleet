@@ -1,16 +1,18 @@
-// The district: two restaurants, and the street they stand on.
+// The district: a restaurant for every orchestrator, and the street they stand on.
 //
 // A restaurant is one orchestration and nothing else — a chef, and the sessions that chef is
-// driving. The Orchestra belongs to the elected orchestrator; The Architects, next door, to a
-// second session seen driving peers of its own. Everyone nobody is supervising is outside on
-// the pavement eating from the food carts, and the moment an orchestrator first messages one
-// of them, that session puts its food down, crosses the road and comes in.
+// driving. There is exactly one chef per restaurant and one restaurant per chef: the block is
+// built from the orchestrators the server elected, in the order it elected them, so a fleet
+// with one orchestrator is one restaurant rather than one restaurant and an empty room next to
+// it. Everyone nobody is supervising is outside on the pavement eating from the food carts,
+// and the moment an orchestrator first messages one of them, that session puts its food down,
+// crosses the road and comes in.
 //
 // The rooms are cutaways: no roof, no front wall, the whole dining room in view. Nothing else
 // stands on the block — in this projection anything to the right of a room is in FRONT of it
 // and rises over the floor, and a building that hides half a dining room earns its place in
-// nothing. The two rooms sit five tiles apart, which is the closest the right-hand one's wall
-// can stand without climbing into its neighbour's floor.
+// nothing. The rooms sit five tiles apart, which is the closest a right-hand one's wall can
+// stand without climbing into its neighbour's floor.
 //
 // Everything is drawn straight onto the retina canvas at the current zoom, so it is crisp at
 // any scale and zooming is continuous. Everything with a position lives on one tile grid;
@@ -73,11 +75,37 @@ const CAR_PERIOD = 21_000;
 /** A session must be seen driving this many peers of its own to be a second orchestrator. */
 const SECOND_HUB_MIN = 2;
 
-/** The two houses on the block, in the order they stand along the street, left to right. */
-const HOUSES = [
-  { key: 'architects', name: 'The Architects' },
-  { key: 'orchestra', name: 'The Orchestra' },
+/**
+ * Restaurant names, handed out in the order orchestrators were elected: the longest-standing
+ * chef keeps The Orchestra as others open next door. A name is scenery — which kitchen is
+ * whose is decided by the election, and the key a house is tracked by is its chef's id.
+ */
+const HOUSE_NAMES = [
+  'The Orchestra',
+  'The Architects',
+  'The Foundry',
+  'The Bindery',
+  'The Lantern',
+  'The Almanac',
 ];
+
+/** More kitchens than this and the block runs off the far end of the street. */
+const MAX_HOUSES = HOUSE_NAMES.length;
+
+/** The key of the one shut restaurant drawn when nobody is orchestrating anything. */
+const NO_CHEF = 'no-chef';
+
+/**
+ * A spawn means two different things depending on whether anyone sent it.
+ *
+ * With a sender it is a chef starting a worker and handing it its opening brief — a message,
+ * and usually the longest and most consequential one of the whole run. Without a sender it is
+ * a session that simply appeared in the fleet, and its `text` is the workspace's NAME rather
+ * than anything anybody said; putting that over a head reads as somebody announcing their own
+ * name, and on a machine where workspaces come and go, as a wall of them.
+ */
+export const isBriefing = (event) =>
+  event.kind === 'spawn' && Boolean(event.fromId) && Boolean(event.text);
 
 const STEP_MS = 230;
 const HANDOFF_MS = 600;
@@ -166,26 +194,27 @@ export class Scene {
   }
 
   /**
-   * Who is chef where.
+   * Every orchestrator on the block, longest-standing first — one per restaurant.
    *
-   * The server elects orchestrators from evidence the browser cannot see — commands read off
-   * screens over many polls, and messages an orchestrator wrote down itself — and it
-   * distinguishes commanding a peer from merely reading its screen. So when it names more than
-   * one, those names win: the first two get the two houses.
+   * The server elects them from evidence the browser cannot see: commands read off screens
+   * over many polls, messages an orchestrator wrote down itself, and the MCP calls its harness
+   * recorded. It also distinguishes commanding a peer from merely reading its screen. So when
+   * it names any at all, those names win and there is one kitchen for each.
    *
-   * The derivation below is the fallback for a server that still elects only one. It finds a
-   * second from the link tally — any other live session driving two or more peers of its own
-   * that the first is not already driving. Such a session is nobody's worker, so it gets the
-   * house next door rather than a table in this one. It counts any link as driving, reads
-   * included, which is the looser rule the server has since dropped.
+   * The derivation below only ever adds to a server that named one. It looks for a second in
+   * the link tally — any other live session driving two or more peers of its own that the
+   * first is not already driving. Such a session is nobody's worker, so it earns a house next
+   * door rather than a table in this one. It counts any link as driving, reads included, which
+   * is the looser rule the server has since dropped, so it is not allowed to open a third.
    */
   #electHubs() {
     const alive = new Set(this.agents.map((a) => a.id));
     const elected = this.hubIds.filter((id) => alive.has(id));
-    if (elected.length > 1) return { orchestra: elected[0], architects: elected[1] };
+    if (elected.length > 1) return elected.slice(0, MAX_HOUSES);
 
-    const orchestra = elected[0] ?? (this.hubId && alive.has(this.hubId) ? this.hubId : null);
-    const driven = new Set(this.links.filter((l) => l.fromId === orchestra).map((l) => l.toId));
+    const first = elected[0] ?? (this.hubId && alive.has(this.hubId) ? this.hubId : null);
+    if (!first) return [];
+    const driven = new Set(this.links.filter((l) => l.fromId === first).map((l) => l.toId));
     const fan = new Map();
     for (const link of this.links) {
       if (link.fromId === link.toId) continue;
@@ -193,18 +222,35 @@ export class Scene {
       if (!fan.has(link.fromId)) fan.set(link.fromId, new Set());
       fan.get(link.fromId).add(link.toId);
     }
-    let architects = null;
+    let second = null;
     let best = SECOND_HUB_MIN - 1;
     for (const [id, peers] of fan) {
       // A session the first orchestrator drives is its worker, whatever else it gets up to.
-      if (id === orchestra || driven.has(id)) continue;
-      const score = [...peers].filter((p) => p !== orchestra && !driven.has(p)).length;
+      if (id === first || driven.has(id)) continue;
+      const score = [...peers].filter((p) => p !== first && !driven.has(p)).length;
       if (score > best) {
         best = score;
-        architects = id;
+        second = id;
       }
     }
-    return { orchestra, architects };
+    return second ? [first, second] : [first];
+  }
+
+  /**
+   * The restaurants to build for those chefs, left to right along the street.
+   *
+   * A house is keyed by its chef, so a kitchen changing hands rebuilds the block rather than
+   * quietly re-labelling a room full of somebody else's workers. With nobody orchestrating
+   * anything there is still one restaurant, shut: a street with no frontage at all reads as a
+   * broken picture rather than as a quiet night.
+   */
+  #houseSpecs(hubIds) {
+    const chefs = hubIds.length ? hubIds : [null];
+    return chefs.map((hubId, index) => ({
+      key: hubId ?? NO_CHEF,
+      name: HOUSE_NAMES[index % HOUSE_NAMES.length],
+      hubId,
+    }));
   }
 
   /**
@@ -262,12 +308,13 @@ export class Scene {
   }
 
   /**
-   * Build the whole district: two restaurants, each big enough for its own orchestration, and
-   * a street with one food cart per project that has sessions nobody is supervising.
+   * Build the whole district: one restaurant per orchestrator, each big enough for its own
+   * orchestration, and a street with one food cart per project that has sessions nobody is
+   * supervising.
    */
-  #buildDistrict(seatsByKey, cartPlan) {
+  #buildDistrict(specs, seatsByKey, cartPlan) {
     const plan = buildDistrict({
-      houses: HOUSES.map((house) => ({ ...house, seats: seatsByKey.get(house.key) ?? 4 })),
+      houses: specs.map((spec) => ({ ...spec, seats: seatsByKey.get(spec.key) ?? 4 })),
       carts: cartPlan,
     });
     this.district = plan;
@@ -276,10 +323,10 @@ export class Scene {
     this.blocked = plan.blocked;
     this.blockedStaff = plan.blockedStaff;
     this.cartKeys = cartKeyList(cartPlan);
-    this.houses = plan.houses.map((housePlan) => ({
+    this.houses = plan.houses.map((housePlan, index) => ({
       key: housePlan.key,
       plan: housePlan,
-      hubId: null,
+      hubId: specs[index].hubId,
       conns: new Map(),
       queue: [],
       orders: [],
@@ -400,22 +447,24 @@ export class Scene {
    * that matters most, a session crossing the road because it has just been picked up. Sizing
    * to every single arrival would rebuild the world at exactly the wrong moment.
    */
-  #shapeOf(counts) {
+  #shapeOf(specs, counts) {
     const seats = new Map(
-      HOUSES.map((house) => [
-        house.key,
-        Math.max(6, Math.ceil(((counts.get(house.key) ?? 0) + 2) / 4) * 4),
+      specs.map((spec) => [
+        spec.key,
+        Math.max(6, Math.ceil(((counts.get(spec.key) ?? 0) + 2) / 4) * 4),
       ]),
     );
-    // The two houses front the same pavement, so they share a depth; the signature has to say
-    // so, or a rebuild would be decided against a shape the builder would not produce.
-    const shapes = HOUSES.map((house) => {
-      const party = Math.max(1, seats.get(house.key));
+    // The houses front the same pavement, so they share a depth; the signature has to say so,
+    // or a rebuild would be decided against a shape the builder would not produce. The keys go
+    // in it too: a kitchen changing hands, or a new one opening, is a different block.
+    const shapes = specs.map((spec) => {
+      const party = Math.max(1, seats.get(spec.key));
       const cols = Math.max(2, Math.ceil(Math.sqrt(party * 1.4)));
       return { cols, rows: Math.max(1, Math.ceil(party / cols)) };
     });
-    const rows = Math.max(...shapes.map((shape) => shape.rows));
-    return { seats, signature: `${shapes.map((s) => s.cols).join('x')}@${rows}` };
+    const rows = Math.max(1, ...shapes.map((shape) => shape.rows));
+    const keys = specs.map((spec) => spec.key).join(',');
+    return { seats, signature: `${keys}|${shapes.map((s) => s.cols).join('x')}@${rows}` };
   }
 
   /**
@@ -427,40 +476,40 @@ export class Scene {
    * a cart, so the street does not reshuffle every time somebody finishes a turn.
    */
   #layout() {
-    const hubs = this.#electHubs();
-    const chefs = new Set(Object.values(hubs).filter(Boolean));
+    const hubIds = this.#electHubs();
+    const specs = this.#houseSpecs(hubIds);
+    const chefs = new Set(hubIds);
     const connsByKey = new Map();
     const claimed = new Set(chefs);
-    for (const house of HOUSES.slice().reverse()) {
-      // The Orchestra picks its workers first: a session both chefs have driven is the elected
-      // orchestrator's, and only what is left over can fill the house next door.
-      const conns = this.#connsFor(hubs[house.key], claimed);
+    for (const spec of specs) {
+      // Election order is precedence: a session two chefs have both driven belongs to the
+      // longest-standing of them, and only what is left over can fill the house next door.
+      const conns = this.#connsFor(spec.hubId, claimed);
       for (const id of conns.keys()) claimed.add(id);
-      connsByKey.set(house.key, conns);
+      connsByKey.set(spec.key, conns);
     }
 
     const guests = this.agents.filter((a) => !chefs.has(a.id));
     const counts = new Map(
-      HOUSES.map((house) => [
-        house.key,
-        guests.filter((a) => connsByKey.get(house.key).has(a.id)).length,
+      specs.map((spec) => [
+        spec.key,
+        guests.filter((a) => connsByKey.get(spec.key).has(a.id)).length,
       ]),
     );
     const outsiders = guests.filter((a) => !claimed.has(a.id));
     const cartPlan = this.#cartPlan(outsiders);
-    const shape = this.#shapeOf(counts);
+    const shape = this.#shapeOf(specs, counts);
 
     if (
       !this.district ||
       shape.signature !== this.shapeSignature ||
       cartKeyList(cartPlan) !== this.cartKeys
     ) {
-      this.#buildDistrict(shape.seats, cartPlan);
+      this.#buildDistrict(specs, shape.seats, cartPlan);
       this.shapeSignature = shape.signature;
     }
     const fresh = this.placement.size === 0;
     for (const house of this.houses) {
-      house.hubId = hubs[house.key] ?? null;
       house.conns = connsByKey.get(house.key) ?? new Map();
     }
 
@@ -473,7 +522,7 @@ export class Scene {
     // A session that has just been picked up gives up its cart; one that is no longer driven,
     // or that has changed chef, gives up its table. Both then walk to the other place.
     for (const agent of guests) {
-      const wants = HOUSES.find((house) => connsByKey.get(house.key).has(agent.id))?.key ?? null;
+      const wants = specs.find((spec) => connsByKey.get(spec.key).has(agent.id))?.key ?? null;
       const has = this.homeOf.get(agent.id) ?? null;
       if (wants === has) continue;
       if (has) {
@@ -668,12 +717,14 @@ export class Scene {
       const house = fromHouse ?? toHouse;
       const worker = fromHouse ? event.toId : toHouse ? event.fromId : null;
       const seat = worker && this.#homeOf(worker) === house ? this.#seatOf(worker) : null;
-      // Only actual traffic gets a speech bubble. A spawn and a gone carry the workspace's
-      // NAME as their text, and putting that over a head reads as the session saying its own
-      // name — on a machine where workspaces come and go, a wall of them.
+      // Only actual traffic gets a speech bubble. An unattributed spawn and a gone carry the
+      // workspace's NAME as their text — see isBriefing for why that must not be spoken.
       const readable =
         Boolean(event.text) &&
-        (event.kind === 'send' || event.kind === 'inbox' || event.kind === 'report');
+        (event.kind === 'send' ||
+          event.kind === 'inbox' ||
+          event.kind === 'report' ||
+          isBriefing(event));
 
       if (event.kind === 'read' && fromHouse && seat) {
         if (this.showReads)
@@ -686,7 +737,12 @@ export class Scene {
         continue;
       }
 
-      if ((event.kind === 'send' || event.kind === 'inbox') && fromHouse && seat) {
+      // A briefing is plated like any other dish: the chef wrote it, a waiter carries it out.
+      if (
+        (event.kind === 'send' || event.kind === 'inbox' || isBriefing(event)) &&
+        fromHouse &&
+        seat
+      ) {
         // The queue copy of a dish already ordered is the same dish; do not plate it twice.
         const duplicate =
           house.orders.some((o) => o.kind === 'send' && o.workerId === worker) ||
@@ -925,7 +981,19 @@ export class Scene {
     };
   }
 
-  /** The zoom at which the whole district — or one half of it — fits the canvas. */
+  /**
+   * Frame the n-th restaurant along the street, or the street itself when there is no n-th.
+   *
+   * The number of restaurants follows the number of orchestrators, so the digit keys cannot be
+   * pinned to fixed rooms. Falling through to the street keeps `3` meaning the street on the
+   * two-orchestrator block it always meant it on.
+   */
+  fitZone(index) {
+    const house = this.houses[index];
+    this.fit(false, house ? house.key : 'street');
+  }
+
+  /** The zoom at which the whole district — or one room of it — fits the canvas. */
   fit(immediate = false, zone = null) {
     const b = this.#bounds(zone);
     const cw = this.canvas.clientWidth;

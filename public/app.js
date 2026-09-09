@@ -1,7 +1,7 @@
 // Wiring: the SSE stream into the scene, and the side panel — a card per agent that opens
 // into the conversation between the orchestrator and that agent.
 
-import { Scene } from './scene.js';
+import { Scene, isBriefing } from './scene.js';
 import { STATUS, FLAVOR, issueOf, plainActivity } from './draw.js';
 
 const scene = new Scene(document.getElementById('world'));
@@ -145,7 +145,8 @@ function threadFor(id) {
   const isHub = isChef(id);
   const rows = [...events.values()]
     .filter((e) => {
-      if (isHub) return e.fromId === id && (e.kind === 'send' || e.kind === 'inbox');
+      if (isHub)
+        return e.fromId === id && (e.kind === 'send' || e.kind === 'inbox' || isBriefing(e));
       const own = e.toId === id && (e.kind === 'waiting' || e.kind === 'spawn');
       if (!chef) return own;
       const between = (e.fromId === chef && e.toId === id) || (e.fromId === id && e.toId === chef);
@@ -277,7 +278,7 @@ function renderList() {
     .sort((a, b) => a.name.localeCompare(b.name));
 
   els.panel.innerHTML = `
-    ${blocks.length ? blocks.join('') : '<p class="hint">No orchestrator detected yet — one is elected as soon as a session is seen driving two others. Until then both restaurants are shut and everybody is out on the street.</p>'}
+    ${blocks.length ? blocks.join('') : '<p class="hint">No orchestrator detected yet — one is elected as soon as a session is seen driving two others. Until then the restaurant is shut and everybody is out on the street.</p>'}
     ${section('Out on the street', street, 'Running on their own, eating from the carts.')}`;
 
   for (const node of els.panel.querySelectorAll('.card')) {
@@ -320,6 +321,8 @@ function renderThread(agent) {
     flushReads();
     if (e.kind === 'waiting') {
       html.push(`<div class="sys waiting">waiting on you<time>${clock(e.at)}</time></div>`);
+    } else if (isBriefing(e)) {
+      html.push(bubbleRow(e, agent));
     } else if (e.kind === 'spawn') {
       html.push(`<div class="sys">joined the fleet<time>${clock(e.at)}</time></div>`);
     } else if (e.text) {
@@ -393,6 +396,7 @@ function renderHeader(snapshot) {
     // A broken fleet log is not fatal — screens still carry the world — but it is silent
     // under-reporting unless it is said out loud somewhere.
     snapshot.logError ? `fleet log: ${snapshot.logError}` : '',
+    snapshot.transcriptError ? `transcripts: ${snapshot.transcriptError}` : '',
   ].filter(Boolean);
   els.live.title = trouble.length ? trouble.join(' · ') : `live · tick ${snapshot.tick}`;
   // The handle doubles as the status line: how many, how many busy, and whether anyone needs you.
@@ -425,9 +429,9 @@ window.addEventListener('keydown', (e) => {
     else openDrawer(false);
   }
   if (e.key === 'f' || e.key === 'F') scene.fit();
-  if (e.key === '1') scene.fit(false, 'orchestra');
-  if (e.key === '2') scene.fit(false, 'architects');
-  if (e.key === '3') scene.fit(false, 'street');
+  // One digit per restaurant, in the order the orchestrators were elected; past the last one
+  // the digit frames the street. On a two-kitchen block that is still 1, 2, street.
+  if (e.key >= '1' && e.key <= '9') scene.fitZone(Number(e.key) - 1);
   if (e.key === 's' || e.key === 'S') openDrawer(!drawerOpen());
   if (e.key === 'r' || e.key === 'R') {
     showReads = !showReads;
