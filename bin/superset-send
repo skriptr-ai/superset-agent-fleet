@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# `superset terminals send`, with the message written down on the way past.
+#
+# The fleet view reconstructs who messaged whom by reading it off an orchestrator's terminal.
+# That works only when the command is on screen AND carries a literal uuid, and an orchestrator
+# with seven workers does the sensible thing instead:
+#
+#   while IFS=$'\t' read -r task ws term; do
+#     superset terminals send --workspace "$ws" --terminal "$term" --text "…"
+#   done < workers.tsv
+#
+# Every one of those sends reaches the screen as `--workspace "$ws"`. The uuid was resolved in
+# a shell the view never sees, so the message is unattributable — not truncated, not missed,
+# genuinely absent. No parser recovers it.
+#
+# This wrapper closes that hole from the other end. The shell expands "$ws" BEFORE argv reaches
+# us, so we always see the real id: inside a loop, in a 1600-character command, on a screen
+# that repainted a second later. We append one line saying what went where, then hand the whole
+# argv to the real CLI unchanged.
+#
+# It is a log of what this process actually did, not a second opinion about it — if the send
+# fails, nothing is written.
+set -uo pipefail
+
+CLI="${SUPERSET_CLI:-superset}"
+LOG="${AGENT_FLEET_LOG:-${SUPERSET_HOME_DIR:-$HOME/.superset}/agent-fleet.jsonl}"
+
+# Read the flags we log without disturbing them: every argument is still passed through as
+# given, including ones we do not understand, so this never becomes a second CLI to maintain.
+to=""
+terminal=""
+text=""
+prev=""
+for arg in "$@"; do
+  case "$prev" in
+    --workspace | -w) to="$arg" ;;
+    --terminal | -t) terminal="$arg" ;;
+    --text) text="$arg" ;;
+  esac
+  prev="$arg"
+done
+
+"$CLI" terminals send "$@"
+status=$?
+# A failed send is not traffic. Leaving it out is what keeps the log honest about the fleet
+# rather than about this script's intentions.
+[[ $status -eq 0 ]] || exit $status
+
+# Nothing to file if we could not tell who it went to; the send itself already happened.
+[[ -n "$to" ]] || exit 0
+
+# `from` is exact rather than inferred: every workspace terminal exports its own ids, which is
+# the one thing a screen can never tell you for certain.
+export AF_FROM="${SUPERSET_WORKSPACE_ID:-}"
+export AF_FROM_TERMINAL="${SUPERSET_TERMINAL_ID:-}"
+export AF_TO="$to"
+export AF_TERMINAL="$terminal"
+export AF_TEXT="$text"
+
+# A message can hold quotes, backslashes and newlines, so the line is built by something that
+# knows how to escape them rather than by string-mashing in shell.
+line="$(
+  python3 -c '
+import json, os, time
+value = lambda name: os.environ.get(name) or None
+print(json.dumps({
+    "at": int(time.time() * 1000),
+    "kind": "send",
+    "from": value("AF_FROM"),
+    "fromTerminal": value("AF_FROM_TERMINAL"),
+    "to": value("AF_TO"),
+    "terminal": value("AF_TERMINAL"),
+    "text": value("AF_TEXT"),
+}, separators=(",", ":")))
+' 2>/dev/null
+)" || line=""
+
+# The log is a courtesy to the fleet view, never a reason for a send to look like it failed:
+# every failure past this point is swallowed and the exit code stays the CLI's own.
+if [[ -n "$line" ]]; then
+  mkdir -p "$(dirname "$LOG")" 2>/dev/null || true
+  # A partly-written line would read as corrupt for the rest of the run, so the whole record
+  # goes out in one append — short lines are atomic, and >> never truncates a concurrent write.
+  printf '%s\n' "$line" >> "$LOG" 2>/dev/null || true
+fi
+exit 0

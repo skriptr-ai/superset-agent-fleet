@@ -1,0 +1,5 @@
+# The Superset CLI rewrites these itself (with tabs) on `plugins publish`, so prettier and the
+# tool would take turns reformatting them forever. The tool owns them.
+.agent-marketplace.json
+plugins/**/plugin.json
+plugins/**/package.json

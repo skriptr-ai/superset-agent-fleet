@@ -101,6 +101,8 @@ export class Scene {
     this.zoomAnchor = null;
     this.agents = [];
     this.hubId = null;
+    /** Every orchestrator the server elected; the houses below name two of them. */
+    this.hubIds = [];
     this.links = [];
     this.homeOf = new Map();
     this.shapeSignature = '';
@@ -149,9 +151,12 @@ export class Scene {
 
   // ── world state ───────────────────────────────────────────────────────────────────────────
 
-  setWorld(agents, hubId, links) {
+  setWorld(agents, hubIds, links) {
     this.agents = agents;
-    this.hubId = hubId;
+    // The server sends every orchestrator it has elected, most-driving first. A single id is
+    // still accepted so an older server, or a console poke, keeps working.
+    this.hubIds = Array.isArray(hubIds) ? hubIds : hubIds ? [hubIds] : [];
+    this.hubId = this.hubIds[0] ?? null;
     this.links = links ?? [];
     this.#layout();
     if (this.needsFit && this.agents.length) {
@@ -163,14 +168,23 @@ export class Scene {
   /**
    * Who is chef where.
    *
-   * The server elects ONE orchestrator: whoever has been seen driving the most peers. A second
-   * is found here from the same tally — any other live session driving two or more peers of its
-   * own that the first is not already driving. Such a session is nobody's worker, so it gets the
-   * house next door rather than a table in this one.
+   * The server elects orchestrators from evidence the browser cannot see — commands read off
+   * screens over many polls, and messages an orchestrator wrote down itself — and it
+   * distinguishes commanding a peer from merely reading its screen. So when it names more than
+   * one, those names win: the first two get the two houses.
+   *
+   * The derivation below is the fallback for a server that still elects only one. It finds a
+   * second from the link tally — any other live session driving two or more peers of its own
+   * that the first is not already driving. Such a session is nobody's worker, so it gets the
+   * house next door rather than a table in this one. It counts any link as driving, reads
+   * included, which is the looser rule the server has since dropped.
    */
   #electHubs() {
     const alive = new Set(this.agents.map((a) => a.id));
-    const orchestra = this.hubId && alive.has(this.hubId) ? this.hubId : null;
+    const elected = this.hubIds.filter((id) => alive.has(id));
+    if (elected.length > 1) return { orchestra: elected[0], architects: elected[1] };
+
+    const orchestra = elected[0] ?? (this.hubId && alive.has(this.hubId) ? this.hubId : null);
     const driven = new Set(this.links.filter((l) => l.fromId === orchestra).map((l) => l.toId));
     const fan = new Map();
     for (const link of this.links) {

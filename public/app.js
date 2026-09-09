@@ -35,7 +35,11 @@ const flavorChip = (flavor) => {
 
 let allAgents = [];
 let agents = [];
-let hubId = null;
+/**
+ * The orchestrators the server elected, most-driving first. It sends a set now; the scene
+ * still names two houses, so anything past the second has nowhere to sit — see Scene#electHubs.
+ */
+let hubIds = [];
 /** Project filter: '' shows every session; a project name shows only its workspaces. */
 let projectFilter = '';
 try {
@@ -129,7 +133,7 @@ function setFilter(value) {
   renderProjects();
   applyFilter();
   scene.select(null);
-  scene.setWorld(agents, hubId, links);
+  scene.setWorld(agents, hubIds, links);
   houses = scene.houseState();
   scene.fit();
   renderHeader({ tick: lastTick, error: null });
@@ -384,7 +388,13 @@ function renderHeader(snapshot) {
   const count = (status) => agents.filter((a) => a.status === status).length;
   const waiting = count('waiting');
   els.live.className = `live ${snapshot.error ? 'bad' : 'on'}`;
-  els.live.title = snapshot.error ? `CLI error: ${snapshot.error}` : `live · tick ${snapshot.tick}`;
+  const trouble = [
+    snapshot.error ? `CLI error: ${snapshot.error}` : '',
+    // A broken fleet log is not fatal — screens still carry the world — but it is silent
+    // under-reporting unless it is said out loud somewhere.
+    snapshot.logError ? `fleet log: ${snapshot.logError}` : '',
+  ].filter(Boolean);
+  els.live.title = trouble.length ? trouble.join(' · ') : `live · tick ${snapshot.tick}`;
   // The handle doubles as the status line: how many, how many busy, and whether anyone needs you.
   els.handleText.innerHTML = `<b>${agents.length}</b> agents · ${count('working')} working${
     waiting ? ` · <span class="warn">${waiting} waiting on you</span>` : ''
@@ -433,7 +443,8 @@ function connect() {
   source.onmessage = (message) => {
     const snapshot = JSON.parse(message.data);
     allAgents = snapshot.agents ?? [];
-    hubId = snapshot.hubId ?? null;
+    // `hubId` is the pre-multi-orchestrator field; tolerate it so an older server still draws.
+    hubIds = snapshot.hubIds ?? (snapshot.hubId ? [snapshot.hubId] : []);
     links = snapshot.links ?? [];
     renderProjects();
     applyFilter();
@@ -441,7 +452,7 @@ function connect() {
     if (events.size > 3000) {
       for (const key of [...events.keys()].slice(0, events.size - 3000)) events.delete(key);
     }
-    scene.setWorld(agents, hubId, links);
+    scene.setWorld(agents, hubIds, links);
     houses = scene.houseState();
     // The stream replays its backlog on connect so threads have history; animating all of
     // it would fire a minute of traffic at once, so only live ticks reach the scene.

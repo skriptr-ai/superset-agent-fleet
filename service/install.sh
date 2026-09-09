@@ -17,6 +17,14 @@ superset="$(command -v superset || true)"
 # The job's PATH: wherever bun and superset were found now, plus the usual places.
 path="$(dirname "$bun"):$(dirname "$superset"):/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
 
+# The wrapper that makes an orchestrator's messages visible whatever harness it runs in (see
+# bin/superset-send). Superset already puts this directory on PATH inside every workspace, so a
+# symlink is all it takes — and a symlink rather than a copy means `git pull` updates it too.
+wrapper_dir="$HOME/.claude/skills/superset/bin"
+mkdir -p "$wrapper_dir"
+ln -sf "$here/bin/superset-send" "$wrapper_dir/superset-send"
+echo "Wrapper installed: $wrapper_dir/superset-send -> $here/bin/superset-send"
+
 mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
 sed -e "s|__BUN__|$bun|g" -e "s|__REPO__|$here|g" -e "s|__PATH__|$path|g" -e "s|__HOME__|$HOME|g" \
   "$here/service/$label.plist.template" > "$plist"

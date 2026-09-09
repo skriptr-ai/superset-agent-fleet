@@ -1,0 +1,10 @@
+{
+  "name": "@superset-plugins/agent-fleet",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "publish": "superset plugins publish agent-fleet",
+    "check": "superset plugins validate plugins/agent-fleet"
+  }
+}
