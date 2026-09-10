@@ -63,6 +63,26 @@ const hideToken = (url) => url.replace(/([?&]token=)[^&]*/, '$1…');
 // which is what lets it run as a login service without being a permanent tax on the machine.
 const IDLE_POLL_MS = Number(process.env.AGENT_FLEET_IDLE_POLL_MS ?? 20_000);
 
+/**
+ * How often an open stream is nudged when there is no snapshot to send.
+ *
+ * Bun closes an idle request after ten seconds unless told otherwise, and a snapshot only goes
+ * out when a poll finishes. On one host that was never close; across three it is a coin toss —
+ * measured gaps of 4.2 to 7.4 seconds against that limit, and the service log carries the
+ * `request timed out after 10 seconds` that says it has already lost one.
+ *
+ * A dropped stream is not fatal, because the browser reconnects and replays. It is a stutter
+ * in a view whose whole job is to look live, and the reconnect costs a full backlog replay
+ * every time. So the stream says something harmless on a clock of its own, which also keeps it
+ * open across a relay that would otherwise reap a quiet connection — the case a fleet spread
+ * over a tailnet actually runs on.
+ */
+const HEARTBEAT_MS = 4_000;
+
+// Long enough that only a genuinely dead socket trips it, since the heartbeat above now keeps
+// a live one busy. Bun caps this at 255 seconds.
+const IDLE_TIMEOUT_S = 60;
+
 // Enough backlog that a browser opened mid-run still sees the recent conversation, capped so a
 // long orchestration does not grow the process without bound.
 const EVENT_HISTORY = 1500;
@@ -118,6 +138,7 @@ function broadcast(payload) {
     try {
       client.send(payload);
     } catch {
+      clearInterval(client.beat);
       clients.delete(client); // the browser went away between ticks
     }
   }
@@ -186,8 +207,19 @@ function streamEvents() {
       // and pull the poller out of its idle wait.
       client.send({ ...latest, events: history });
       wake();
+      // A comment line: valid SSE, ignored by EventSource, and enough to keep the connection
+      // from being reaped while a slow poll is still running.
+      client.beat = setInterval(() => {
+        try {
+          controller.enqueue(encoder.encode(': ping\n\n'));
+        } catch {
+          clearInterval(client.beat);
+          clients.delete(client); // the browser went away between beats
+        }
+      }, HEARTBEAT_MS);
     },
     cancel() {
+      clearInterval(client?.beat);
       clients.delete(client);
     },
   });
@@ -307,6 +339,7 @@ if (BIND === '0.0.0.0' || BIND === '::') {
 Bun.serve({
   port: PORT,
   hostname: BIND,
+  idleTimeout: IDLE_TIMEOUT_S,
   fetch: handle,
   error: () => new Response('error', { status: 500 }),
 });
