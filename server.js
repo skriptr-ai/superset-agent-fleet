@@ -20,6 +20,44 @@ const PUBLIC_DIR = join(HERE, 'public');
 const PORT = Number(process.env.AGENT_FLEET_PORT ?? 4400);
 const POLL_MS = Number(process.env.AGENT_FLEET_POLL_MS ?? 2500);
 
+/**
+ * Which interface to listen on. Loopback unless told otherwise, which is a TIGHTENING: Bun
+ * serves on 0.0.0.0 when not told, so until now this was reachable on every interface the
+ * machine had — a reader of every terminal screen on the box, offered to the whole network by
+ * default. One instance per host means deliberately publishing some of them, and a default
+ * that was already open is the wrong place to start from.
+ *
+ * Set it to the address you mean, never `0.0.0.0`: on a host whose firewall is inactive that
+ * also serves the fleet on its public IP.
+ */
+const BIND = process.env.AGENT_FLEET_BIND ?? '127.0.0.1';
+
+/** Required on every /api route once set. EventSource cannot send headers, so `?token=` counts. */
+const TOKEN = process.env.AGENT_FLEET_TOKEN ?? '';
+
+/**
+ * Other hosts' instances, comma-separated (`http://preben-dev-vm:4400?token=…`). The browser
+ * merges them with this one; nothing server-side ever calls them, because a server that read
+ * its peers would be back to describing a machine it cannot see.
+ */
+const PEERS = (process.env.AGENT_FLEET_PEERS ?? '')
+  .split(',')
+  .map((p) => p.trim())
+  .filter(Boolean);
+
+const isLoopback = (host) => host === '127.0.0.1' || host === '::1' || host === 'localhost';
+
+/**
+ * `fleet` reads every host it can see, which is what a single instance has always done and is
+ * still right when there is only one. `host` reads only the machine it runs on, which is what
+ * an instance does once its peers are covering the others — and is the whole point: reading
+ * your own machine is a millisecond and gives you the local files too.
+ */
+const SCOPE = process.env.AGENT_FLEET_SCOPE === 'host' ? 'host' : 'fleet';
+
+/** Peers are printed at startup and a token in the URL is a secret, not decoration. */
+const hideToken = (url) => url.replace(/([?&]token=)[^&]*/, '$1…');
+
 // Each poll spawns a `superset` process per terminal. With nobody watching, that is work for
 // no one, so an unwatched server idles down to this and wakes the moment a page connects —
 // which is what lets it run as a login service without being a permanent tax on the machine.
@@ -59,7 +97,7 @@ const TRANSCRIPT_ROOT =
     : (process.env.AGENT_FLEET_TRANSCRIPTS ??
       join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'projects'));
 
-const world = new World(STATE_PATH, LOG_PATH, TRANSCRIPT_ROOT);
+const world = new World(STATE_PATH, LOG_PATH, TRANSCRIPT_ROOT, SCOPE);
 await world.load();
 const clients = new Set();
 let latest = {
@@ -162,18 +200,55 @@ function streamEvents() {
   });
 }
 
+/**
+ * Every screen on this host is behind these routes, so an unauthenticated one is a terminal
+ * reader offered to whoever can reach the port. When a token is set it is required; when one
+ * is not, the server is on loopback and the question does not arise (see the bind check at
+ * the bottom, which refuses the combination that would make it arise).
+ */
+function authorized(request) {
+  if (!TOKEN) return true;
+  const url = new URL(request.url);
+  if (url.searchParams.get('token') === TOKEN) return true;
+  return request.headers.get('authorization') === `Bearer ${TOKEN}`;
+}
+
+/**
+ * Cross-origin access is granted only to a request that has ALREADY proved it has the token.
+ * A blanket `*` would let any web page the user happens to visit read their fleet, which on a
+ * tailnet is a page on the open internet reading terminals on a private network.
+ */
+function cors(request, response) {
+  const origin = request.headers.get('origin');
+  if (!origin || !TOKEN) return response;
+  response.headers.set('access-control-allow-origin', origin);
+  response.headers.set('vary', 'origin');
+  return response;
+}
+
 async function handle(request) {
   const { pathname } = new URL(request.url);
-  if (pathname === '/api/stream') return streamEvents();
-  if (pathname === '/api/world') return Response.json({ ...latest, events: history });
+  if (pathname.startsWith('/api/') && !authorized(request)) {
+    return new Response('unauthorized', { status: 401 });
+  }
+  // A peer list is the browser's, not the server's: it says who else to go and ask.
+  if (pathname === '/api/peers') {
+    return cors(request, Response.json({ peers: PEERS, self: latest.hostName ?? null }));
+  }
+  if (pathname === '/api/stream') return cors(request, streamEvents());
+  if (pathname === '/api/world')
+    return cors(request, Response.json({ ...latest, events: history }));
   if (pathname === '/api/health') {
-    return Response.json({
-      ok: true,
-      tick: latest.tick,
-      agents: latest.agents.length,
-      watchers: clients.size,
-      transport: transportNote(),
-    });
+    return cors(
+      request,
+      Response.json({
+        ok: true,
+        tick: latest.tick,
+        agents: latest.agents.length,
+        watchers: clients.size,
+        transport: transportNote(),
+      }),
+    );
   }
   if (pathname === '/api/terminal') {
     const id = new URL(request.url).searchParams.get('id');
@@ -210,13 +285,33 @@ if (!version) {
   process.exit(1);
 }
 
+// Publishing a terminal reader to a network without a token is not a thing to warn about and
+// then do anyway. The two safe shapes are loopback-with-no-token and address-with-token; this
+// refuses the third and names the fix rather than leaving the host quietly readable.
+if (!isLoopback(BIND) && !TOKEN) {
+  console.error(
+    `Refusing to serve on ${BIND} without AGENT_FLEET_TOKEN.\n` +
+      'Every terminal screen on this host is behind /api, so a bind beyond loopback needs one.\n' +
+      'Set AGENT_FLEET_TOKEN=<secret>, or leave AGENT_FLEET_BIND unset to stay on 127.0.0.1.',
+  );
+  process.exit(1);
+}
+if (BIND === '0.0.0.0' || BIND === '::') {
+  console.error(
+    `Refusing to serve on ${BIND}: that is every interface, including any public one.\n` +
+      'Name the address you mean — a tailnet address, or 127.0.0.1.',
+  );
+  process.exit(1);
+}
+
 Bun.serve({
   port: PORT,
+  hostname: BIND,
   fetch: handle,
   error: () => new Response('error', { status: 500 }),
 });
 console.log(
-  `Superset Agent Fleet  http://localhost:${PORT}   (${version}, polling every ${POLL_MS}ms)`,
+  `Superset Agent Fleet  http://${BIND}:${PORT}   (${version}, polling every ${POLL_MS}ms)`,
 );
 // Which transport won is the difference between a millisecond and half a second per read, so
 // it is said out loud rather than left to be inferred from how sluggish the world feels. The
@@ -224,4 +319,7 @@ console.log(
 // that has actually been made.
 await useDirect();
 console.log(`  reading through: ${transportNote()}`);
+console.log(`  scope: ${SCOPE === 'host' ? 'this host only' : 'the whole fleet'}`);
+if (PEERS.length) console.log(`  merging with: ${PEERS.map(hideToken).join(', ')}`);
+if (TOKEN) console.log('  token required on /api');
 pollForever();

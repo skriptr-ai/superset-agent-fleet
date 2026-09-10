@@ -193,6 +193,36 @@ The host service knows only its **own** machine — no host, relay or remote pro
 it — so every remote host still goes through the CLI, and that is now essentially the whole
 cost of a poll. `superset status` reports the transport in use, as does `/api/health`.
 
+### One instance per host, merged in the browser
+
+A single instance can read the whole fleet (`AGENT_FLEET_SCOPE=fleet`, the default) and pays
+for it: everything beyond this machine is a `superset` process and a cloud round trip, and the
+agents' own records — the transcripts an MCP-driven orchestrator writes, which are the only
+exact evidence of what it sent — are local files it cannot open at all.
+
+So each host can instead run its own instance against itself:
+
+```sh
+# on the VM — bind to its tailnet address, never 0.0.0.0
+AGENT_FLEET_BIND=100.112.30.44 AGENT_FLEET_TOKEN=$SECRET AGENT_FLEET_SCOPE=host bun server.js
+
+# on the laptop — reads itself, and tells the browser where the others are
+AGENT_FLEET_SCOPE=host AGENT_FLEET_PEERS="http://preben-dev-vm:4400?token=$SECRET" bun server.js
+```
+
+Nothing merges server-side. A server that read its peers would be describing a machine it
+cannot see, which is the thing this arrangement exists to escape; the browser opens one stream
+per host and folds them together, because it is the only party that talks to all of them.
+
+Rooms partition cleanly — each instance reports its own host and no other — so the merge is a
+union rather than a reconciliation. Event ids are per-server and get namespaced by source
+before they meet. A host that goes away has its rooms **dropped**, not left standing: the view
+stops claiming to know, names the host it lost, and turns the live dot red.
+
+Every `/api` route reads every terminal screen on its host, so a bind beyond loopback requires
+a token and `0.0.0.0` is refused outright — on a machine whose firewall is inactive that would
+also serve the fleet on its public IP.
+
 ### Every machine, not just this one
 
 Each of those workspace commands defaults to **the machine it runs on**. `workspaces list`
@@ -401,16 +431,22 @@ served fresh on every request.
 All optional, as environment variables (put them in the plist's `EnvironmentVariables` for the
 service):
 
-| Variable                       | Default                         | Meaning                                                               |
-| ------------------------------ | ------------------------------- | --------------------------------------------------------------------- |
-| `AGENT_FLEET_PORT`             | `4400`                          | Port. One fleet per machine, so one server per machine                |
-| `AGENT_FLEET_POLL_MS`          | `2500`                          | Poll interval while a page is open                                    |
-| `AGENT_FLEET_IDLE_POLL_MS`     | `20000`                         | Poll interval with nobody watching                                    |
-| `AGENT_FLEET_STATE`            | `~/.superset/agent-fleet.json`  | Where who-drives-whom is remembered; `''` to forget                   |
-| `AGENT_FLEET_LOG`              | `~/.superset/agent-fleet.jsonl` | What `bin/superset-send` recorded; `''` to ignore                     |
-| `AGENT_FLEET_TRANSCRIPTS`      | `~/.claude/projects`            | Claude Code's sessions, where MCP calls are read from; `''` to ignore |
-| `AGENT_FLEET_READ_CONCURRENCY` | `10`                            | `superset` processes in flight per poll; each is ~130 MB              |
-| `SUPERSET_CLI`                 | `superset`                      | The CLI binary, if it is not on `PATH`                                |
+| Variable                           | Default                         | Meaning                                                                 |
+| ---------------------------------- | ------------------------------- | ----------------------------------------------------------------------- |
+| `AGENT_FLEET_PORT`                 | `4400`                          | Port. One fleet per machine, so one server per machine                  |
+| `AGENT_FLEET_BIND`                 | `127.0.0.1`                     | Interface to serve on. Name an address; `0.0.0.0` is refused            |
+| `AGENT_FLEET_TOKEN`                | _unset_                         | Required on `/api` once set. Mandatory to bind beyond loopback          |
+| `AGENT_FLEET_SCOPE`                | `fleet`                         | `host` reads only this machine, leaving the rest to their own instances |
+| `AGENT_FLEET_PEERS`                | _unset_                         | Other hosts' instances, comma-separated, merged in the browser          |
+| `AGENT_FLEET_POLL_MS`              | `2500`                          | Poll interval while a page is open                                      |
+| `AGENT_FLEET_IDLE_POLL_MS`         | `20000`                         | Poll interval with nobody watching                                      |
+| `AGENT_FLEET_STATE`                | `~/.superset/agent-fleet.json`  | Where who-drives-whom is remembered; `''` to forget                     |
+| `AGENT_FLEET_LOG`                  | `~/.superset/agent-fleet.jsonl` | What `bin/superset-send` recorded; `''` to ignore                       |
+| `AGENT_FLEET_TRANSCRIPTS`          | `~/.claude/projects`            | Claude Code's sessions, where MCP calls are read from; `''` to ignore   |
+| `AGENT_FLEET_READ_CONCURRENCY`     | `32`                            | Workspaces read at once; free now that local reads spawn nothing        |
+| `AGENT_FLEET_CLI_INFLIGHT`         | `12`                            | `superset` processes alive at once; each is ~130 MB                     |
+| `AGENT_FLEET_REMOTE_IDLE_PER_TICK` | `4`                             | Idle remote workspaces re-read per tick; local ones are always read     |
+| `SUPERSET_CLI`                     | `superset`                      | The CLI binary, if it is not on `PATH`                                  |
 
 ## Troubleshooting
 

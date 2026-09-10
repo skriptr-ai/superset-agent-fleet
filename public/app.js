@@ -64,10 +64,17 @@ const nameOf = (id) => allAgents.find((a) => a.id === id)?.name ?? 'someone';
  * would be noise on the common case. The moment a VM joins, though, `main` on `Skriptr`
  * exists twice over and the name alone stops identifying anything.
  */
-const hostChip = (agent) =>
-  agent.remote && agent.hostName
+let homeHost = null;
+
+const hostChip = (agent) => {
+  // `agent.remote` is what the REPORTING server thought, and with one instance per host every
+  // server thinks all of its own rooms are local. Away-ness is a fact about the viewer, so it
+  // is decided here against the host this page was served from.
+  const away = agent.hostName && homeHost && agent.hostName !== homeHost;
+  return away
     ? `<span class="chip host" title="on another machine">🖥 ${escape(short(agent.hostName, 22))}</span>`
     : '';
+};
 
 /** Ad-hoc Superset sessions carry no project; they get a bucket of their own. */
 const projectOf = (agent) => (agent.type === 'session' || !agent.project ? '' : agent.project);
@@ -150,7 +157,7 @@ function setFilter(value) {
   scene.setWorld(agents, hubIds, links);
   room = scene.roomState();
   scene.fit();
-  renderHeader({ tick: lastTick, error: null });
+  renderHeader({ tick: lastTick, error: null, hosts: null });
   renderPanel();
 }
 
@@ -420,18 +427,15 @@ function renderPanel() {
   }
 }
 
-function renderHeader(snapshot) {
+function renderHeader(world) {
   const count = (status) => agents.filter((a) => a.status === status).length;
   const waiting = count('waiting');
-  els.live.className = `live ${snapshot.error ? 'bad' : 'on'}`;
-  const trouble = [
-    snapshot.error ? `CLI error: ${snapshot.error}` : '',
-    // A broken fleet log is not fatal — screens still carry the world — but it is silent
-    // under-reporting unless it is said out loud somewhere.
-    snapshot.logError ? `fleet log: ${snapshot.logError}` : '',
-    snapshot.transcriptError ? `transcripts: ${snapshot.transcriptError}` : '',
-  ].filter(Boolean);
-  els.live.title = trouble.length ? trouble.join(' · ') : `live · tick ${snapshot.tick}`;
+  els.live.className = `live ${world.error ? 'bad' : 'on'}`;
+  // `world.error` already names the host each complaint came from — with several servers
+  // reporting, "CLI error" alone would not say which machine was having the trouble.
+  els.live.title = world.error
+    ? world.error
+    : `live · tick ${world.tick}${world.hosts ? ` · ${world.hosts}` : ''}`;
   // The handle doubles as the status line: how many, how many busy, and whether anyone needs you.
   els.handleText.innerHTML = `<b>${agents.length}</b> agents · ${count('working')} working${
     waiting ? ` · <span class="warn">${waiting} waiting on you</span>` : ''
@@ -474,34 +478,145 @@ window.addEventListener('keydown', (e) => {
   if (e.key === '-' || e.key === '_') scene.zoomBy(1 / 1.4);
 });
 
-function connect() {
-  const source = new EventSource('/api/stream');
-  source.onmessage = (message) => {
-    const snapshot = JSON.parse(message.data);
-    allAgents = snapshot.agents ?? [];
-    // `hubId` is the pre-multi-orchestrator field; tolerate it so an older server still draws.
-    hubIds = snapshot.hubIds ?? (snapshot.hubId ? [snapshot.hubId] : []);
-    links = snapshot.links ?? [];
-    renderProjects();
-    applyFilter();
-    for (const e of snapshot.events ?? []) events.set(e.id, e);
-    if (events.size > 3000) {
-      for (const key of [...events.keys()].slice(0, events.size - 3000)) events.delete(key);
+/**
+ * One world drawn from several servers.
+ *
+ * Each host runs its own instance and reports only the machine it is on, because that is the
+ * only machine it can read properly: its terminals answer in a millisecond and its agents'
+ * own records — the transcripts an MCP-driven orchestrator writes and nothing else ever sees —
+ * are local files. Nothing merges them server-side; a server that read its peers would be
+ * describing a machine it cannot see, which is the thing this whole design is escaping.
+ *
+ * So the merge happens here, at the only point that talks to all of them.
+ *
+ * @type {Map<string, object>} source key ('' for this server) -> its latest snapshot
+ */
+const sources = new Map();
+/** @type {Map<string, string>} source key -> why it is not reporting, if it is not */
+const sourceTrouble = new Map();
+
+/** A peer entry may carry its token in the URL; turn it into a stream address. */
+function streamUrl(peer, path) {
+  if (!peer) return path;
+  const url = new URL(peer);
+  const token = url.searchParams.get('token');
+  return `${url.origin}${path}${token ? `?token=${encodeURIComponent(token)}` : ''}`;
+}
+
+const originOf = (peer) => (peer ? new URL(peer).host : 'this host');
+
+/**
+ * Fold every server's snapshot into one.
+ *
+ * Rooms partition cleanly — each instance reports its own host and no other — so agents are a
+ * union rather than a reconciliation. Two things do need care:
+ *
+ *   - Event ids are per-server (`e1`, `e2`, …) and would collide across them, so each is
+ *     namespaced by the source it came from before going anywhere near the shared map.
+ *   - A link is only ever observed by the SENDER's server, which is the instance holding that
+ *     orchestrator's records. A cross-host beam therefore arrives from one side only, and
+ *     unioning by pair is right; if two servers somehow both claim one, the later sighting
+ *     wins rather than the two being added together into a doubled count.
+ */
+function merged() {
+  const agentsById = new Map();
+  const hubs = new Set();
+  const linkByPair = new Map();
+  const fresh = [];
+  let tick = 0;
+
+  for (const [key, snapshot] of sources) {
+    for (const agent of snapshot.agents ?? []) {
+      // An instance running ON an agent's machine reports it as local, and knows more about it
+      // than a fleet-scoped instance reading the same room over the cloud. Prefer that one.
+      const held = agentsById.get(agent.id);
+      if (!held || (held.remote && !agent.remote)) agentsById.set(agent.id, agent);
     }
-    scene.setWorld(agents, hubIds, links);
-    room = scene.roomState();
-    // The stream replays its backlog on connect so threads have history; animating all of
-    // it would fire a minute of traffic at once, so only live ticks reach the scene.
-    if (!firstSnapshot) scene.addEvents((snapshot.events ?? []).filter((e) => !e.replay));
-    firstSnapshot = false;
-    lastTick = snapshot.tick;
-    renderHeader(snapshot);
-    renderPanel();
+    for (const id of snapshot.hubIds ?? (snapshot.hubId ? [snapshot.hubId] : [])) hubs.add(id);
+    for (const link of snapshot.links ?? []) {
+      const pair = `${link.fromId}|${link.toId}`;
+      const held = linkByPair.get(pair);
+      if (!held || (link.lastAt ?? 0) >= (held.lastAt ?? 0)) linkByPair.set(pair, link);
+    }
+    for (const event of snapshot.events ?? []) {
+      const id = `${key}#${event.id}`;
+      if (!events.has(id)) fresh.push({ ...event, id });
+      events.set(id, { ...event, id });
+    }
+    tick = Math.max(tick, snapshot.tick ?? 0);
+  }
+
+  if (events.size > 3000) {
+    for (const key of [...events.keys()].slice(0, events.size - 3000)) events.delete(key);
+  }
+
+  const trouble = [];
+  for (const [key, snapshot] of sources) {
+    const where = originOf(key);
+    if (snapshot.error) trouble.push(`${where}: ${snapshot.error}`);
+    if (snapshot.logError) trouble.push(`${where} fleet log: ${snapshot.logError}`);
+    if (snapshot.transcriptError) trouble.push(`${where} transcripts: ${snapshot.transcriptError}`);
+  }
+  for (const [key, why] of sourceTrouble) trouble.push(`${originOf(key)}: ${why}`);
+
+  return {
+    tick,
+    agents: [...agentsById.values()],
+    hubIds: [...hubs],
+    links: [...linkByPair.values()],
+    fresh,
+    error: trouble.length ? trouble.join(' · ') : null,
+    hosts: `${sources.size}/${sources.size + sourceTrouble.size} hosts`,
+  };
+}
+
+function redraw() {
+  const world = merged();
+  allAgents = world.agents;
+  hubIds = world.hubIds;
+  links = world.links;
+  renderProjects();
+  applyFilter();
+  scene.setWorld(agents, hubIds, links);
+  room = scene.roomState();
+  // The stream replays its backlog on connect so threads have history; animating all of
+  // it would fire a minute of traffic at once, so only live ticks reach the scene.
+  if (!firstSnapshot) scene.addEvents(world.fresh.filter((e) => !e.replay));
+  firstSnapshot = false;
+  lastTick = world.tick;
+  renderHeader(world);
+  renderPanel();
+}
+
+function listen(peer) {
+  const key = peer ?? '';
+  const source = new EventSource(streamUrl(peer, '/api/stream'));
+  source.onmessage = (message) => {
+    sourceTrouble.delete(key);
+    const snapshot = JSON.parse(message.data);
+    // The server this page came from is home; every other host's rooms are away.
+    if (!peer && snapshot.hostName) homeHost = snapshot.hostName;
+    sources.set(key, snapshot);
+    redraw();
   };
   source.onerror = () => {
-    els.live.className = 'live bad';
-    els.live.title = 'reconnecting…';
+    // A host that has gone away must not take its rooms with it silently: the snapshot is
+    // dropped so the world stops claiming to know, and the reason is said out loud.
+    sources.delete(key);
+    sourceTrouble.set(key, 'not reachable — reconnecting');
+    redraw();
   };
+}
+
+async function connect() {
+  listen(null);
+  try {
+    const res = await fetch('/api/peers');
+    const { peers } = await res.json();
+    for (const peer of peers ?? []) listen(peer);
+  } catch {
+    // No peer list is the normal single-host case, not a failure.
+  }
 }
 
 renderPanel();
