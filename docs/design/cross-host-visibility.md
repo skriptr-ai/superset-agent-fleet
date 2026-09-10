@@ -7,10 +7,10 @@ Status: **proposal**. Nothing here is built.
 The fleet view now finds workspaces on every host (#7). It cannot see what an orchestrator
 running on another host is _doing_.
 
-Put an orchestrator on the VM and it appears as a room, because its screen is read like any
-other. It does not appear as an orchestrator: no beams to its workers, no speech bubbles, no
-place in the kitchen. It sits out on the street looking like a worker while it drives nine of
-them.
+Put an orchestrator on the VM and it appears as a session, because its screen is read like any
+other. It does not appear as an orchestrator: no drinks over the bar, no stools beside it, no
+patch of bar of its own. It sits out at a table looking like one of yours while it drives nine
+sessions.
 
 That is not a rendering bug. The evidence simply is not on this machine.
 
@@ -61,6 +61,11 @@ Verified this session, against Superset 1.27.0:
   `publish` / `pull` / `versions`, with `just_me` or `org` visibility. It is meant for HTML
   documents. There is no `delete`.
 - **`superset tasks`** is similar in reach and even less appropriate as a data channel.
+- **Every host is already on one tailnet, and they can serve HTTP to each other.** All three —
+  `prebens-macbook-pro`, `preben-dev-vm`, `preben-home` — hold Tailscale addresses. A listener
+  bound to the VM's tailnet address was fetched from the laptop by IP _and_ by the name
+  `preben-dev-vm`. There is no NAT problem to solve and no port to open on a public interface;
+  the network the design needs is the one already in use.
 
 The shape of the answer follows from the first two lines. Every host can read itself perfectly
 and cheaply. No host can read another well. So the reading should happen **where the records
@@ -109,9 +114,10 @@ invisible ones — and the laptop is where orchestrators mostly run.
 
 ## Recommendation
 
-**Start with B.** It is the smallest change that fixes both open problems at once, it needs no
-protocol, and it degrades honestly: a host you cannot reach is a host whose rooms are missing,
-which the view can say plainly.
+**Start with B**, and the reachability it depends on has now been tested rather than hoped for.
+It is the smallest change that fixes both open problems at once, it needs no protocol, and it
+degrades honestly: a host you cannot reach is a host whose rooms are missing, which the view can
+say plainly.
 
 It also collapses the poll cost that (#7) left behind. Nothing crosses the network per terminal
 any more — each server reads its own host at ~1 ms — so the ~4 s poll becomes a local one, and
@@ -123,16 +129,19 @@ becomes if merging in the browser turns out to be the wrong place for it.
 
 ## What has to be decided
 
-1. **Reachability.** Can a browser on the laptop open an SSE connection to the VM? The VM is on
-   Azure and the laptop is behind NAT, so the direction matters: laptop-as-client is the
-   workable one, and it still needs a port and a way through the firewall. _This is the
-   question the whole recommendation rests on, and it is not a question about this repo._
-2. **Authentication.** A fleet view reachable from outside loopback is a terminal-screen reader
-   exposed to the network. It needs a token at minimum, and probably should not be reachable
-   from anything but a known address.
+1. ~~**Reachability.**~~ **Settled: yes.** This was the question the recommendation rested on,
+   and it is answered — see the tailnet entry above. Traffic currently relays through a DERP
+   node rather than going direct, at ~40–50 ms round trip, which matters far less here than it
+   would today: the design opens ONE long-lived SSE connection per host, where the current one
+   pays a cloud round trip per terminal per tick.
+2. **Authentication.** Tailscale answers most of it — the tailnet is authenticated and
+   encrypted, and a host on it is not exposed to the public internet. What remains is a
+   discipline rather than a design: the server must bind to its **tailnet address only**, never
+   `0.0.0.0`, or it is also served on the VM's public IP, where `ufw` is inactive. Worth a
+   token as well, since anything that can reach the port can read every terminal on that host.
 3. **How a host-side instance gets there.** Checked out and run as a Superset workspace, or
    installed as a login service the way this one is on the laptop.
-4. **Who draws the kitchen.** Orchestrator election, the link tally, and the event history are
+4. **Who elects the bartenders.** Orchestrator election, the link tally, and the event history are
    currently per-server state. Merging N snapshots in the browser means deciding whether each
    server elects within its own host and the browser unions the result, or the browser elects
    across the merged whole. The second is more correct and moves real logic client-side.
@@ -142,8 +151,9 @@ becomes if merging in the browser turns out to be the wrong place for it.
 
 ## What has not been verified
 
-- That an SSE stream from the VM to a browser on the laptop is possible at all. Everything else
-  here was tested; this was not, and (1) above is the reason it matters most.
+- That an SSE stream specifically — as opposed to a plain HTTP fetch, which was tested — holds
+  open across a DERP relay for hours without dropping. The reconnect path in `public/app.js`
+  exists and would cover a drop, but it has never been exercised over anything but loopback.
 - That two servers' event streams merge without double-counting. The sources are disjoint by
   construction _within_ one host; across hosts, a message sent from the laptop to a VM worker
   is recorded by the laptop's transcript reader and may also be inferred from the worker's
