@@ -83,6 +83,111 @@ export const ROAD_ROWS = 3; // two lanes and the centre line
 export const KERB_ROWS = 2; // the near pavement, where the parked cars and the shelter stand
 export const CROWD_ROWS = 3; // the far pavement, where the railing runs
 
+// ── the city around the block ────────────────────────────────────────────────────────────────
+//
+// The block is one of a few. A grid of streets runs two blocks out from it to either side and
+// behind, and in front of it, past the main road, is the river. None of it is walkable and
+// none of it is an agent: it is there so the restaurant stands in a city rather than on a
+// diamond of pavement floating in the dark.
+
+/** A block's footprint, in tiles, and the width of the streets between blocks. */
+export const CITY = {
+  blockW: 10,
+  blockD: 8,
+  pave: 2,
+  lanes: 3,
+  /** Blocks to either side of the restaurant's, and behind it. */
+  ring: { side: 2, back: 2 },
+};
+/** Pavement, lanes, pavement: the tiles from one block's edge to the next. */
+const STREET_W = CITY.pave * 2 + CITY.lanes;
+
+/** How far past the edge of town a car drives along the main road before it fades, in tiles. */
+const TRAFFIC_REACH = 30;
+
+/**
+ * The city's geometry, as functions of a block index. Column bands are numbered from the
+ * restaurant's own (0) outward, negative to the left; row bands from the restaurant's own (0)
+ * backward, so `rowBand(1)` is the block behind it. Between any two neighbouring bands is one
+ * street of STREET_W tiles, and there is a street outside the last band too.
+ */
+function planCity({ hw, rd, street }) {
+  const { blockW, blockD, pave } = CITY;
+  const colPitch = blockW + STREET_W;
+  const rowPitch = blockD + STREET_W;
+
+  const colBand = (i) => {
+    if (i === 0) return { x0: 0, x1: hw };
+    if (i > 0) {
+      const x0 = hw + STREET_W + (i - 1) * colPitch;
+      return { x0, x1: x0 + blockW };
+    }
+    const x1 = -STREET_W - (-i - 1) * colPitch;
+    return { x0: x1 - blockW, x1 };
+  };
+  const rowBand = (j) => {
+    if (j === 0) return { y0: 0, y1: rd };
+    const y1 = -STREET_W - (j - 1) * rowPitch;
+    return { y0: y1 - blockD, y1 };
+  };
+  /** The street to the right of column band `i`: its lanes only, pavements excluded. */
+  const colRoad = (i) => ({ x0: colBand(i).x1 + pave, x1: colBand(i + 1).x0 - pave });
+  /** The street behind row band `j`, lanes only. */
+  const rowRoad = (j) => ({ y0: rowBand(j + 1).y1 + pave, y1: rowBand(j).y0 - pave });
+
+  /** Which column band, or which street after one, a tile column falls in. */
+  const colIndexAt = (x) => {
+    if (x >= 0 && x < hw) return 0;
+    if (x >= hw) return 1 + Math.floor((x - hw) / colPitch);
+    return -1 - Math.floor((-x - 1) / colPitch);
+  };
+  /** Which row band, or which street behind one, a tile row falls in; 0 for the street rows too. */
+  const rowIndexAt = (y) => (y >= 0 ? 0 : 1 + Math.floor((-y - 1) / rowPitch));
+  const isRoadRow = (y) => {
+    if (y >= 0) return y >= street.roadY && y < street.roadY + street.roadRows;
+    const j = rowIndexAt(y);
+    const band = rowBand(j);
+    if (y >= band.y0 && y < band.y1) return false;
+    const road = rowRoad(j - 1);
+    return y >= road.y0 && y < road.y1;
+  };
+  const isRoadColumn = (x) => {
+    const i = colIndexAt(x);
+    const band = colBand(i);
+    if (x >= band.x0 && x < band.x1) return false;
+    // In the street to the right of band i, or the one to the left of it.
+    const right = x >= band.x1 ? colRoad(i) : colRoad(i - 1);
+    return x >= right.x0 && x < right.x1;
+  };
+
+  const { side, back } = CITY.ring;
+  // The town's own tiles: the last blocks on every side, their streets, and the pavements
+  // beyond those. Past that is plain ground, and past the main road is the river.
+  const x0 = colRoad(-side - 1).x0 - pave;
+  const x1 = colRoad(side).x1 + pave;
+  const y0 = rowRoad(back).y0 - pave;
+
+  return {
+    colBand,
+    rowBand,
+    colRoad,
+    rowRoad,
+    colIndexAt,
+    rowIndexAt,
+    isRoadColumn,
+    isRoadRow,
+    colPitch,
+    rowPitch,
+    ring: CITY.ring,
+    x0,
+    x1,
+    y0,
+    /** Side streets run from the back of town down to the main road, and stop there. */
+    sideRoadEnd: street.roadY,
+    traffic: { x0: x0 - TRAFFIC_REACH, x1: x1 + TRAFFIC_REACH },
+  };
+}
+
 /** The tiles the bartenders' patches actually take up, elbow room between them included. */
 function barRun(patches) {
   if (!patches.length) return 0;
@@ -151,7 +256,8 @@ export function buildDistrict({ house = {} } = {}) {
     crossings: [{ x0: plan.door.x - 1, x1: plan.door.x + 2 }],
   };
 
-  const props = planProps({ w, street, plan });
+  const city = planCity({ hw, rd, street });
+  const props = planProps({ w, street, plan, city });
   const { blocked, blockedStaff } = planBlocking({ w, d, plan, rd, street });
 
   return {
@@ -160,6 +266,7 @@ export function buildDistrict({ house = {} } = {}) {
     houseDepth: rd,
     house: plan,
     street,
+    city,
     props,
     blocked,
     blockedStaff,
@@ -266,11 +373,13 @@ function planHouse(spec, ox, w, lobbyY, rd) {
  * The big pieces are placed at fractions of the frontage rather than at fixed pitches, so a
  * narrow street gets the same three landmarks spread across it as a wide one does.
  */
-function planProps({ w, street, plan }) {
+function planProps({ w, street, plan, city }) {
   const props = [];
   const { walkY, roadY, roadRows, kerbY, crowdY, crowdRows } = street;
   const backEdge = crowdY + crowdRows - 1;
-  const clearOfDoor = (x) => Math.abs(x - plan.door.x) > 2;
+  // The far pavement is cut by the side streets coming down to the main road, so nothing
+  // stands where a car would drive through it.
+  const clearOfDoor = (x) => Math.abs(x - plan.door.x) > 2 && !city.isRoadColumn(x);
   const at = (fraction) => Math.max(2, Math.min(w - 4, Math.round(w * fraction)));
 
   // The far pavement, in front of the frontage, kept clear of the door.

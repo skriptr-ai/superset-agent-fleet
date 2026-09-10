@@ -40,6 +40,12 @@ more rows of fewer columns, rather than the whole place growing both ways at onc
 else standing on the block. Outside is scenery — a bus shelter, a newspaper kiosk, a phone box,
 trees and cars at the kerb — because a restaurant with nothing in front of it is not a street.
 
+**And the street is in a city.** Two blocks of lit buildings to either side of the restaurant
+and two behind it, streets between them, and in front, past the main road, the river. The view
+opens framed on the restaurant with the city filling the window round it, and that opening view
+is as far out as the camera goes: you can zoom in and look around inside it, but never pull back
+past it or pan off its edge. None of it is walkable and none of it is an agent.
+
 It reads the fleet through the `superset` CLI and nothing else, so it can only ever show a state
 an orchestrator could itself have observed.
 

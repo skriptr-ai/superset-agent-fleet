@@ -73,21 +73,35 @@ import {
   HOUSE_WALL_H,
 } from './district.js';
 import {
-  skyGlow,
   buildGround,
   drawGround,
   restaurantTerrace,
   houseSilhouette,
   streetProp,
-  backRailing,
   car,
 } from './street.js';
+import { drawCityGround, cityObjects, cityStreetProps, drawQuay } from './city.js';
 
 const WALL_H = HOUSE_WALL_H;
-const ZOOM_MIN = 0.32; // screen pixels per world unit
+/**
+ * Screen pixels per world unit. The floor is the opening view: that shows the restaurant and
+ * the two blocks round it, and the camera can go closer but never further out. It is set when
+ * the room is built and again whenever the window changes shape.
+ */
+const ZOOM_FLOOR = 0.32;
 const ZOOM_MAX = 6;
 
+/** How long a car takes to cross the district's own frontage; the city road is longer pro rata. */
 const CAR_PERIOD = 21_000;
+/** Cars in each lane of the main road at once, evenly spaced along it. */
+const CARS_PER_LANE = 4;
+
+/** How far behind the back walls the opening view reaches, in world units: the blocks behind. */
+const BACK_PEEK = 250;
+/** How far past the frontage the opening view reaches, in world units: the road and the quay. */
+const FRONT_PEEK = 40;
+/** Where the restaurant's centre sits down the canvas in the opening view: a touch below the middle. */
+const ROOM_CENTRE = 0.54;
 
 /** The name over the door. There is one restaurant, so there is one name. */
 const HOUSE_NAME = 'The Orchestra';
@@ -166,12 +180,19 @@ export class Scene {
     this.showReads = true;
     this.onSelect = () => {};
     this.needsFit = true;
+    /** The opening view, which is also the furthest the camera may go: see ZOOM_FLOOR. */
+    this.home = null;
     /** Override to freeze or scrub the animation clock; null means real time. */
     this.clock = null;
 
     this.#bindInput();
     this.#resize();
-    window.addEventListener('resize', () => this.#resize());
+    window.addEventListener('resize', () => {
+      this.#resize();
+      // The window's new shape gives the opening view a new size; whatever the camera was
+      // doing, it must still be inside it.
+      if (this.room) this.#rehome();
+    });
     requestAnimationFrame(() => this.#frame());
   }
 
@@ -188,10 +209,10 @@ export class Scene {
     this.hubIds = Array.isArray(hubIds) ? hubIds : hubIds ? [hubIds] : [];
     this.links = links ?? [];
     this.#layout();
-    if (this.needsFit && this.agents.length) {
+    if (this.needsFit && this.room) {
       this.fit(true);
       this.needsFit = false;
-    }
+    } else if (this.room) this.#rehome();
   }
 
   /**
@@ -880,6 +901,7 @@ export class Scene {
     const dist = this.district;
     const plan = this.room.plan;
     const points = [];
+    let centre = null;
     const at = (x, y, z = 0) => points.push(iso(x, y, z));
     if (zone === 'bar') {
       at(plan.ox, 0, WALL_H);
@@ -903,14 +925,25 @@ export class Scene {
       at(plan.ox, plan.d + 2);
       at(plan.ox + plan.w, plan.d + 2);
     } else {
-      at(plan.ox, 0, WALL_H + 52);
-      at(plan.ox + plan.w, 0, WALL_H + 52);
-      at(plan.ox, plan.d);
-      at(plan.ox + plan.w, plan.d);
-      at(0, dist.houseDepth - 1);
-      at(dist.w, dist.houseDepth - 1);
-      at(0, dist.d);
-      at(dist.w, dist.d);
+      // The default: the restaurant, centred, with the mountains showing over the city behind
+      // it and the road and the river in front. The city runs to the edge of the canvas on
+      // every side, so this is a framing rather than a fit — whatever does not fit is simply
+      // more city.
+      at(plan.ox - 3, 0, WALL_H + 52);
+      at(plan.ox + plan.w + 3, 0, WALL_H + 52);
+      at(plan.ox - 3, plan.d);
+      at(plan.ox + plan.w + 3, plan.d);
+      const roomXs = points.map((p) => p.x);
+      const roomYs = points.map((p) => p.y);
+      centre = {
+        x: (Math.min(...roomXs) + Math.max(...roomXs)) / 2,
+        y: (Math.min(...roomYs) + Math.max(...roomYs)) / 2,
+      };
+      points.push({ x: iso(plan.ox, plan.d).x, y: iso(plan.ox, 0).y - WALL_H - BACK_PEEK });
+      points.push({
+        x: iso(plan.ox + plan.w, plan.d).x,
+        y: iso(plan.ox + plan.w, dist.d).y + FRONT_PEEK,
+      });
     }
     const xs = points.map((p) => p.x);
     const ys = points.map((p) => p.y);
@@ -919,6 +952,7 @@ export class Scene {
       maxX: Math.max(...xs) + 26,
       minY: Math.min(...ys) - 26,
       maxY: Math.max(...ys) + 32,
+      centre,
     };
   }
 
@@ -927,18 +961,73 @@ export class Scene {
     this.fit(false, ['room', 'bar', 'tables'][index] ?? 'street');
   }
 
+  /**
+   * The opening view: the restaurant centred, the blocks behind it and the road and quay in
+   * front, at whatever zoom the canvas allows. It is also the edge of the world as far as the
+   * camera is concerned — nothing outside it can be looked at.
+   */
+  #homeView() {
+    const b = this.#bounds(null);
+    const cw = this.canvas.clientWidth;
+    const ch = this.canvas.clientHeight;
+    const zoom = Math.max(
+      ZOOM_FLOOR,
+      Math.min(ZOOM_MAX, Math.min(cw / (b.maxX - b.minX), ch / (b.maxY - b.minY)) * 0.96),
+    );
+    // Framed on the restaurant, not on the box it shares with the road and the blocks: the
+    // zoom comes from the whole, the centre from the room.
+    return {
+      zoom,
+      x: b.centre.x - cw / zoom / 2,
+      y: b.centre.y - (ch / zoom) * ROOM_CENTRE,
+      w: cw / zoom,
+      h: ch / zoom,
+    };
+  }
+
+  /** Recompute the opening view and pull the camera back inside it. */
+  #rehome() {
+    this.home = this.#homeView();
+    this.camera.zoom = this.#clampZoom(this.camera.zoom);
+    this.#clampPan(this.camera);
+    if (this.cameraTarget) {
+      this.cameraTarget.zoom = this.#clampZoom(this.cameraTarget.zoom);
+      this.#clampPan(this.cameraTarget);
+    }
+    if (this.zoomTarget !== null) this.zoomTarget = this.#clampZoom(this.zoomTarget);
+  }
+
+  #clampZoom(zoom) {
+    return Math.min(ZOOM_MAX, Math.max(this.home?.zoom ?? ZOOM_FLOOR, zoom));
+  }
+
+  /** Keep a camera inside the opening view: at its zoom, that leaves exactly one position. */
+  #clampPan(cam) {
+    const home = this.home;
+    if (!home) return cam;
+    const cw = this.canvas.clientWidth;
+    const ch = this.canvas.clientHeight;
+    cam.x = Math.min(Math.max(cam.x, home.x), home.x + home.w - cw / cam.zoom);
+    cam.y = Math.min(Math.max(cam.y, home.y), home.y + home.h - ch / cam.zoom);
+    return cam;
+  }
+
   /** The zoom at which the whole district — or one part of it — fits the canvas. */
   fit(immediate = false, zone = null) {
     if (!this.room) return;
-    const b = this.#bounds(zone);
-    const cw = this.canvas.clientWidth;
-    const ch = this.canvas.clientHeight;
-    const zoom = clamp(Math.min(cw / (b.maxX - b.minX), ch / (b.maxY - b.minY)) * 0.96);
-    const target = {
-      zoom,
-      x: (b.minX + b.maxX) / 2 - cw / zoom / 2,
-      y: (b.minY + b.maxY) / 2 - ch / zoom / 2,
-    };
+    this.home = this.#homeView();
+    let target;
+    if (zone) {
+      const b = this.#bounds(zone);
+      const cw = this.canvas.clientWidth;
+      const ch = this.canvas.clientHeight;
+      const zoom = this.#clampZoom(Math.min(cw / (b.maxX - b.minX), ch / (b.maxY - b.minY)) * 0.96);
+      target = this.#clampPan({
+        zoom,
+        x: (b.minX + b.maxX) / 2 - cw / zoom / 2,
+        y: (b.minY + b.maxY) / 2 - ch / zoom / 2,
+      });
+    } else target = { zoom: this.home.zoom, x: this.home.x, y: this.home.y };
     this.zoomTarget = null;
     if (immediate) {
       this.camera = target;
@@ -965,18 +1054,19 @@ export class Scene {
 
   #glideTo(at, zoom) {
     this.zoomTarget = null;
-    this.cameraTarget = {
-      zoom: clamp(zoom),
+    zoom = this.#clampZoom(zoom);
+    this.cameraTarget = this.#clampPan({
+      zoom,
       x: at.x - this.canvas.clientWidth / zoom / 2,
       y: at.y - this.canvas.clientHeight / zoom / 2,
-    };
+    });
   }
 
   /** Nudge the zoom by a factor about a screen point; the wheel, the keys and double-click all land here. */
   zoomBy(factor, anchor = null) {
     this.cameraTarget = null;
     const base = this.zoomTarget ?? this.camera.zoom;
-    this.zoomTarget = clamp(base * factor);
+    this.zoomTarget = this.#clampZoom(base * factor);
     this.zoomAnchor = anchor ?? { x: this.canvas.clientWidth / 2, y: this.canvas.clientHeight / 2 };
   }
 
@@ -993,6 +1083,7 @@ export class Scene {
       this.camera.zoom = Math.abs(this.zoomTarget - next) < 0.002 ? this.zoomTarget : next;
       this.camera.x = before.x - anchor.x / this.camera.zoom;
       this.camera.y = before.y - anchor.y / this.camera.zoom;
+      this.#clampPan(this.camera);
       if (this.camera.zoom === this.zoomTarget) this.zoomTarget = null;
       return;
     }
@@ -1002,6 +1093,7 @@ export class Scene {
     this.camera.zoom += (target.zoom - this.camera.zoom) * k;
     this.camera.x += (target.x - this.camera.x) * k;
     this.camera.y += (target.y - this.camera.y) * k;
+    this.#clampPan(this.camera);
     if (
       Math.abs(target.x - this.camera.x) < 0.3 &&
       Math.abs(target.y - this.camera.y) < 0.3 &&
@@ -1068,6 +1160,7 @@ export class Scene {
       }
       this.camera.x -= dx / this.camera.zoom;
       this.camera.y -= dy / this.camera.zoom;
+      this.#clampPan(this.camera);
       last = { x: e.clientX, y: e.clientY };
     });
     for (const event of ['pointerup', 'pointercancel']) {
@@ -1159,8 +1252,19 @@ export class Scene {
     ctx.fillStyle = '#0e1219';
     ctx.fillRect(0, 0, cw, ch);
     const k = this.camera.zoom;
-    ctx.setTransform(dpr * k, 0, 0, dpr * k, -this.camera.x * dpr * k, -this.camera.y * dpr * k);
-    if (this.district) this.#drawWorld(ctx, t, byId);
+    if (this.district) {
+      // The part of the world under the glass, in world units: everything is drawn to it and
+      // nothing past it.
+      const view = {
+        x0: this.camera.x,
+        y0: this.camera.y,
+        x1: this.camera.x + cw / k,
+        y1: this.camera.y + ch / k,
+        zoom: k,
+      };
+      ctx.setTransform(dpr * k, 0, 0, dpr * k, -this.camera.x * dpr * k, -this.camera.y * dpr * k);
+      this.#drawWorld(ctx, t, byId, view);
+    }
 
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     this.#drawGlances(ctx, t);
@@ -1176,15 +1280,21 @@ export class Scene {
    * depth; between the two the order is fixed, because a building and a lamp post on the
    * pavement in front of it never need arguing about.
    */
-  #drawWorld(b, t, byId) {
+  #drawWorld(b, t, byId, view) {
     const dist = this.district;
-    skyGlow(b, dist);
+    drawCityGround(b, dist, view, t);
     drawGround(b, this.ground);
+    // The city beside and behind the restaurant goes down before it: the back walls hide the
+    // feet of what stands behind them, and nothing out there is ever in front of the room.
+    for (const item of cityObjects(b, dist, view, t)) item.draw();
     this.#drawInside(b, t, byId);
 
     const street = [];
     const out = (x, y, layer, draw) => street.push({ depth: (x + y) * 10 + layer, draw });
     for (const prop of dist.props) out(prop.x, prop.y, 5, () => streetProp(b, prop, t));
+    for (const prop of cityStreetProps(dist, view)) {
+      out(prop.x, prop.y, 5, () => streetProp(b, prop, t));
+    }
     for (const traffic of this.#traffic(t)) {
       out(traffic.x, traffic.y, 4, () =>
         car(b, traffic.x, traffic.y, traffic.index, traffic.dir, t, traffic.fade),
@@ -1192,7 +1302,7 @@ export class Scene {
     }
     street.sort((p, q) => p.depth - q.depth);
     for (const item of street) item.draw();
-    backRailing(b, dist.w, dist.d);
+    drawQuay(b, dist, view, t);
   }
 
   /** Whether the kitchen has anything on: an order waiting, or a waiter out with one. */
@@ -1319,28 +1429,28 @@ export class Scene {
    * still looks like a street — so it is generated from the clock and never from the fleet.
    */
   #traffic(t) {
-    const { street, w } = this.district;
+    const { street, city, w } = this.district;
     const lanes = [
       { y: street.roadY + 0.05, dir: -1, gap: 0 },
       { y: street.roadY + 1.05, dir: 1, gap: 0.42 },
     ];
     const cars = [];
+    const from = city.traffic.x0;
+    const to = city.traffic.x1;
+    // The same speed the cars always drove at, over a road that now runs a long way past the
+    // district in both directions.
+    const stretch = (to - from) / (w + 3);
     lanes.forEach((lane, index) => {
-      const phase = (t / (CAR_PERIOD + index * 6500) + lane.gap) % 1;
-      if (phase > 0.5) return; // the road is empty half the time
-      const k = phase * 2;
-      const from = -4;
-      const to = w - 1;
-      const x = lane.dir > 0 ? from + k * (to - from) : to - k * (to - from);
-      cars.push({
-        x,
-        y: lane.y,
-        index,
-        dir: lane.dir,
-        // The road is only paved between 0 and w; a car arrives and leaves through a fade
-        // rather than driving off the end of it.
-        fade: Math.max(0, Math.min(1, (x - from) / 3, (to - x) / 3)),
-      });
+      const period = (CAR_PERIOD + index * 6500) * stretch;
+      for (let n = 0; n < CARS_PER_LANE; n++) {
+        const phase = (t / period + lane.gap + n / CARS_PER_LANE) % 1;
+        const k = phase;
+        const x = lane.dir > 0 ? from + k * (to - from) : to - k * (to - from);
+        // A car arrives and leaves through a fade rather than blinking in at the end of the run.
+        const fade = Math.max(0, Math.min(1, (x - from) / 3, (to - x) / 3));
+        if (fade <= 0) continue;
+        cars.push({ x, y: lane.y, index: index + n * 2, dir: lane.dir, fade });
+      }
     });
     return cars;
   }
@@ -1944,10 +2054,6 @@ function inPolygon(point, polygon) {
     }
   }
   return inside;
-}
-
-function clamp(zoom) {
-  return Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, zoom));
 }
 
 function short(name) {
