@@ -433,6 +433,7 @@ public/street.js              the restaurants' frontage, the road, the pavement 
 public/district.js            the one tile grid it all stands on: tables, kerbs, carts, what is walkable
 public/scene.js               who is chef where, who is inside and who is out, orders, pathfinding, the camera
 public/app.js                 SSE wiring, the project filter, the drawer with cards and threads
+docs/design/                  proposals not yet built; cross-host-visibility.md is the open one
 service/                      the launchd agent and its install/uninstall scripts
 plugins/agent-fleet/          the skill that tells orchestrators to use the wrapper
 ```
