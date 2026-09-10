@@ -451,6 +451,13 @@ kbd {
   color: var(--dim);
 }
 
+/* A place, not a property of the agent — so it reads as an address rather than as another
+   fact about the model or the branch. */
+.chip.host {
+  color: var(--dim);
+  border-style: dashed;
+}
+
 .unread {
   margin: 10px 0 0;
   font-size: 12px;
