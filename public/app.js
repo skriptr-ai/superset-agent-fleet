@@ -222,6 +222,20 @@ function statusPill(agent) {
   return `<span class="pill" style="--c:${s.color}"><i></i>${escape(text)}</span>`;
 }
 
+// Which source answered "is it working": the agent's own lifecycle hooks, read off the host
+// service, or its screen. Shown so a status that looks wrong can be argued with.
+function evidenceChip(agent) {
+  if (!agent.evidence) return '';
+  const subs = agent.subagents
+    ? ` · ${agent.subagents} sub-agent${agent.subagents === 1 ? '' : 's'}`
+    : '';
+  const title =
+    agent.evidence === 'hooks'
+      ? 'Status from the lifecycle hooks the agent posts to the host service'
+      : 'Status read from the terminal screen';
+  return `<span class="chip" title="${title}">per its ${agent.evidence === 'hooks' ? 'hooks' : 'screen'}${escape(subs)}</span>`;
+}
+
 const ago = (at) => {
   if (!at) return 'earlier';
   const s = Math.max(0, Math.round((Date.now() - at) / 1000));
@@ -396,6 +410,7 @@ function renderAgent(id) {
         ${agent.model ? `<span class="chip">${escape(agent.model)}</span>` : ''}
         ${hostChip(agent)}
         ${agent.branch ? `<span class="chip mono">⎇ ${escape(short(agent.branch, 34))}</span>` : ''}
+        ${evidenceChip(agent)}
       </div>
       ${agent.queued.length ? `<p class="unread">✉ ${agent.queued.length} unread — will be read after the current tool call</p>` : ''}
     </div>

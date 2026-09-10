@@ -288,6 +288,26 @@ consistent with a message, never a claim that the CLI reported one.
 5. **Status flips** (idle→working, working→idle), so the room still moves when a command has
    scrolled off the orchestrator's screen.
 
+**Whether a session is working at all** is read two ways, and they cover for each other.
+
+- **What the agent's own hooks told the host service.** Every Claude Code and Codex session
+  Superset launches has lifecycle hooks wired in — a prompt submitted, a turn finished, a
+  permission prompt, a sub-agent started or stopped — and each one is posted to the host
+  service, which keeps the last event per terminal. This is the same state that drives the
+  working and permission indicators in the desktop app, and it is exact: the agent said so, at
+  the moment it happened. It is read straight off the host service, because no `superset`
+  command prints it and no MCP tool returns it, which also means it only covers **this
+  machine**; a remote host's sessions have only their screens.
+- **What the screen shows.** Claude's spinner line, its `done` line, an interrupt, a permission
+  prompt; Codex's spinner and its prompt line. Exactly right when one of those is on screen and
+  silent when none is — the spinner between frames, a screen just cleared.
+
+What the screen _shows_ beats what the hooks _remember_, and the hooks answer only where the
+screen is silent. A spinner on screen is working whatever the hooks say (a wakeup that submitted
+no prompt leaves them at `Stop`); a done line or an interrupt on screen is idle whatever the hooks
+say (escape fires no hook, so they stay at `Start`). With no marker at all, the hooks decide.
+Each room's card says which one answered.
+
 Nothing is double-counted, because the sources are disjoint by construction rather than by
 arbitration: an MCP call reaches the screen as `Called superset 2 times`, the wrapper's own
 command line is `superset-send …`, and the screen parser matches neither.
