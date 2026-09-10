@@ -59,6 +59,9 @@ import {
   issueOf,
   STATUS,
   KIND_COLOR,
+  PHASE_COLOR,
+  plainActivity,
+  taskTitle,
 } from './draw.js';
 import {
   buildDistrict,
@@ -1823,68 +1826,43 @@ export class Scene {
     }
   }
 
+  /**
+   * The tooltip: three things and nothing else. Who it is, what it is doing this minute, and
+   * what the task is. Where it is sitting, which model, the token count and the last thing it
+   * said are all one click away in the thread, and on a hover they were noise in front of
+   * the two lines a person actually stops to read.
+   */
   #drawTooltip(ctx, byId) {
     const id = this.hoverId;
     if (!id || id === this.selectedId) return;
     const agent = byId.get(id);
     if (!agent) return;
     const status = STATUS[agent.status] ?? STATUS.idle;
-    const conn = this.#connOf(id);
-    const place = this.placement.get(id);
     ctx.save();
-    ctx.font = '500 11.5px ui-sans-serif, system-ui, sans-serif';
-    const lines = agent.says ? wrapText(ctx, agent.says, 230, 3) : [];
-    const where =
-      place?.mode === 'tending'
-        ? 'behind the bar'
-        : place?.mode === 'stool'
-          ? 'on a stool at the bar'
-          : place?.mode === 'queued'
-            ? 'in line at the door'
-            : place?.mode === 'walking'
-              ? 'on the way'
-              : place?.mode === 'seated'
-                ? 'at a table'
-                : null;
     const wrap = (text, font, color, max) => {
       ctx.font = font;
       return wrapText(ctx, text, 236, max).map((line) => ({ text: line, font, color }));
     };
+    const doing = agent.doing;
+    const working = agent.status === 'working' && doing;
+    const dur = agent.status === 'working' ? plainActivity(agent.activity ?? '') : '';
+    const state = `${status.sub}${dur ? ` · ${dur}` : ''}`;
+    const now =
+      working && doing.phase !== 'thinking'
+        ? `${doing.label}${doing.detail ? ` · ${doing.detail}` : ''}`
+        : working
+          ? 'thinking'
+          : null;
+    const color = working ? (PHASE_COLOR[doing.phase] ?? PHASE_COLOR.thinking) : status.color;
+    const title = taskTitle(agent);
+    const mono = '600 10.5px ui-monospace, SFMono-Regular, monospace';
     const rows = [
       ...wrap(agent.name, '600 13px ui-sans-serif, system-ui, sans-serif', '#eef3f9', 2),
-      ...wrap(
-        [status.sub, where, agent.activity, agent.model].filter(Boolean).join(' · '),
-        '500 10.5px ui-monospace, SFMono-Regular, monospace',
-        status.color,
-        2,
-      ),
-      ...(conn
-        ? [
-            {
-              text: `${conn.sends} poured · ${conn.replies} sent back · ${conn.reads} check-ins`,
-              font: '500 10.5px ui-monospace, SFMono-Regular, monospace',
-              color: '#8b9cb3',
-            },
-          ]
-        : [
-            {
-              text: this.#patchOfHub(id)
-                ? 'orchestrating the stools in front of it'
-                : 'nobody is orchestrating it — one of yours',
-              font: '500 10.5px ui-monospace, SFMono-Regular, monospace',
-              color: '#8b9cb3',
-            },
-          ]),
-      ...lines.map((l) => ({
-        text: l,
-        font: 'italic 500 11.5px ui-sans-serif, system-ui, sans-serif',
-        color: '#c9d4e2',
-      })),
-      {
-        text: 'click to open the thread',
-        font: '500 10px ui-sans-serif, system-ui',
-        color: '#6f7f95',
-      },
+      ...wrap(state, mono, status.color, 1),
+      ...(now ? wrap(`▸ ${now}`, mono, color, 2) : []),
+      ...(title
+        ? wrap(title, '500 11.5px ui-sans-serif, system-ui, sans-serif', '#c9d4e2', 3)
+        : []),
     ];
     let width = 0;
     for (const row of rows) {

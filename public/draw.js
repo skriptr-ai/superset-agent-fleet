@@ -28,6 +28,80 @@ export const FLAVOR = {
   unknown: { body: '#8f84b8', trim: '#6b6190', hair: '#33283f', label: 'agent' },
 };
 
+/** What an agent is doing, by colour — see lib/activity.js for how a phase is decided. */
+export const PHASE_COLOR = {
+  reading: '#5aa9e6',
+  editing: '#c792ea',
+  testing: '#5ee08a',
+  browsing: '#ffd166',
+  building: '#7fd4c9',
+  running: '#7fd4c9',
+  shipping: '#f2a65a',
+  delegating: '#e0a0d0',
+  orchestrating: '#ffd166',
+  asking: '#ffbf47',
+  thinking: '#8b9cb3',
+};
+
+/** The phase names once the turn is over, matching lib/activity.js. */
+export const PHASE_PAST = {
+  reading: 'researched',
+  editing: 'implemented',
+  testing: 'tested',
+  browsing: 'verified in the browser',
+  building: 'built',
+  running: 'ran the app',
+  shipping: 'committed',
+  delegating: 'delegated',
+  orchestrating: 'drove the fleet',
+  asking: 'asked you',
+  thinking: 'thought',
+};
+
+/**
+ * Whether two lines say the same thing, near enough that showing both would be a stutter.
+ * Superset names a workspace after its task and Claude titles the session after its first
+ * exchange, so the two are frequently the same words in a different order.
+ */
+export function sameGist(a, b) {
+  const words = (s) =>
+    new Set(
+      String(s ?? '')
+        .toLowerCase()
+        .replace(/[^a-z0-9 ]+/g, ' ')
+        .split(/\s+/)
+        // An issue number is a key, not a word: `pt-666` and `PT-666 folder share …` share
+        // nothing a person would call the same sentence.
+        .filter((w) => w.length > 2 && !/^\d+$/.test(w)),
+    );
+  const x = words(a);
+  const y = words(b);
+  if (!x.size || !y.size) return false;
+  let shared = 0;
+  for (const w of x) if (y.has(w)) shared += 1;
+  return shared / Math.min(x.size, y.size) >= 0.6;
+}
+
+/**
+ * The task as one line: the session's own title, or the Superset task's, or the opening of
+ * the prompt the agent is on — unless it would only repeat the name, in which case the ask
+ * stands in when it says something more. Null when there is nothing to add.
+ */
+export function taskTitle(agent) {
+  const task = agent.task;
+  if (!task) return null;
+  const name = issueOf(agent.name, agent.branch).title || agent.name;
+  if (task.title) return sameGist(task.title, name) ? null : task.title;
+  // No title from anywhere: the prompt it is on is all there is, unless that too is the name.
+  return task.ask && !sameGist(task.ask, name) ? task.ask : null;
+}
+
+/** `researched → implemented → tested`: the turn's phases once it is over. Empty if none. */
+export function turnStory(doing) {
+  if (!doing?.trail?.length) return '';
+  return [...(doing.story ?? []), PHASE_PAST[doing.phase] ?? doing.label].join(' → ');
+}
+
 export const KIND_COLOR = {
   send: '#ffd166',
   inbox: '#ffd166',
