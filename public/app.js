@@ -3,7 +3,15 @@
 // orchestrating, with you.
 
 import { Scene, isBriefing } from './scene.js';
-import { STATUS, FLAVOR, issueOf, plainActivity } from './draw.js';
+import {
+  STATUS,
+  FLAVOR,
+  PHASE_COLOR,
+  issueOf,
+  plainActivity,
+  taskTitle,
+  turnStory,
+} from './draw.js';
 
 const scene = new Scene(document.getElementById('world'));
 // A console handle, so a scene can be poked at without a live orchestrator to hand.
@@ -270,6 +278,48 @@ function lastExchange(id) {
   return `<p class="last ${inbound ? 'in' : 'out'}">${escape(short(last.text, 120))}<time>${who} · ${ago(last.at)}</time></p>`;
 }
 
+/**
+ * The task, as one line under the name — see taskTitle for which line — with where it came
+ * from on the hover, so a title that reads wrong can be argued with.
+ */
+function taskLine(agent) {
+  const text = taskTitle(agent);
+  if (!text) return '';
+  const task = agent.task;
+  const why =
+    task.source === 'session'
+      ? "The session's own title for itself"
+      : task.source === 'task'
+        ? `Superset task${task.slug ? ` ${task.slug}` : ''}`
+        : 'The prompt it is acting on';
+  return `<p class="task" title="${escape(why)}">${escape(short(text, 140))}</p>`;
+}
+
+/**
+ * What the agent is doing about it right now — the phase and the thing it is on — while it
+ * works; and once it stops, what it last said, which is the outcome. The thread header also
+ * gets the phases the turn went through; a card does not, because a list of them is a wall.
+ */
+function nowLine(agent, { story: withStory = false } = {}) {
+  const doing = agent.doing;
+  if (agent.status === 'working' && doing) {
+    const color = PHASE_COLOR[doing.phase] ?? PHASE_COLOR.thinking;
+    // `researched → implemented → testing`: the story so far, ending on now.
+    const story = withStory && doing.story?.length ? [...doing.story, doing.label].join(' → ') : '';
+    const head =
+      doing.phase === 'thinking'
+        ? agent.says
+          ? escape(short(agent.says, 120))
+          : 'thinking'
+        : `${escape(doing.label)}${doing.detail ? ` <code>${escape(doing.detail)}</code>` : ''}`;
+    const how = doing.source === 'transcript' ? 'from its transcript' : 'read off its screen';
+    return `<p class="now" style="--p:${color}" title="${how}"><i></i>${head}${story ? `<small>${escape(story)}</small>` : ''}</p>`;
+  }
+  const said = lastExchange(agent.id);
+  const did = withStory ? turnStory(doing) : '';
+  return `${said}${did ? `<p class="did">last turn: ${escape(did)}</p>` : ''}`;
+}
+
 function card(agent) {
   const conn = connFor(agent.id);
   const isHub = isBartender(agent.id);
@@ -289,10 +339,18 @@ function card(agent) {
         ${agent.model ? `<span class="chip">${escape(agent.model)}</span>` : ''}
         ${hostChip(agent)}
       </div>
-      ${isHub && drives ? `<p class="last">pouring for ${drives} session${drives === 1 ? '' : 's'} at the bar</p>` : lastExchange(agent.id)}
+      ${taskLine(agent)}
+      ${isHub && drives ? `<p class="last">pouring for ${drives} session${drives === 1 ? '' : 's'} at the bar</p>` : ''}
+      ${nowLine(agent)}
     </article>`;
 }
 
+/**
+ * The list, in the same three places as the room, so the panel never says something the
+ * picture contradicts. A resting session is in the line at the door whoever its bartender
+ * is: it keeps its stool, but it is not sitting on it, and the panel used to list it "at the
+ * tables" — a place it had never been.
+ */
 function renderList() {
   const known = byId();
   const section = (title, list, note) =>
@@ -300,12 +358,14 @@ function renderList() {
       ? `<h3>${title} <small>${list.length}</small></h3>${note ? `<p class="hint">${note}</p>` : ''}${list.map(card).join('')}`
       : '';
 
+  const inLine = new Set(room.queue);
   const claimed = new Set();
   const blocks = [];
   for (const patch of room.bar) {
     const tender = known.get(patch.hubId);
     if (tender) claimed.add(tender.id);
     const stools = patch.members
+      .filter((id) => !inLine.has(id))
       .map((id) => known.get(id))
       .filter(Boolean)
       .sort((a, b) => (connFor(b.id)?.lastAt ?? 0) - (connFor(a.id)?.lastAt ?? 0));
@@ -322,13 +382,17 @@ function renderList() {
     );
   }
 
-  const mine = agents
-    .filter((a) => !claimed.has(a.id))
+  const dining = agents
+    .filter((a) => !claimed.has(a.id) && !inLine.has(a.id))
     .sort((a, b) => a.name.localeCompare(b.name));
+
+  // In the order they joined the line, which is the order the room draws them in.
+  const line = room.queue.map((id) => known.get(id)).filter((a) => a && !claimed.has(a.id));
 
   els.panel.innerHTML = `
     ${blocks.length ? blocks.join('') : '<h3>At the bar <small>0</small></h3><p class="hint">Nobody is orchestrating yet — a bartender is elected as soon as a session is seen driving two others. Until then the bar stands empty and the whole fleet is out on the floor.</p>'}
-    ${section('At the tables', mine, 'Nobody is orchestrating these — they are yours, and a waiter carries out what you send them.')}`;
+    ${section('At the tables', dining, 'Working, and nobody is orchestrating them — they are yours, and a waiter carries out what you send them.')}
+    ${section('In line at the door', line, 'Resting. Behind the rope until somebody gives them a turn; a worker goes back to its stool, anyone else to a table.')}`;
 
   for (const node of els.panel.querySelectorAll('.card')) {
     node.addEventListener('click', () => scene.select(node.dataset.id));
@@ -412,6 +476,8 @@ function renderAgent(id) {
         ${agent.branch ? `<span class="chip mono">⎇ ${escape(short(agent.branch, 34))}</span>` : ''}
         ${evidenceChip(agent)}
       </div>
+      ${taskLine(agent)}
+      ${nowLine(agent, { story: true })}
       ${agent.queued.length ? `<p class="unread">✉ ${agent.queued.length} unread — will be read after the current tool call</p>` : ''}
     </div>
     <div class="thread">${renderThread(agent)}</div>

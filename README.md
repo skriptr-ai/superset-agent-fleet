@@ -316,7 +316,34 @@ None of this asks an orchestrator to use a particular tool. It shouldn't: a skil
 agents to prefer the CLI has already lost to a pre-approved MCP tool that was better suited to
 the job, and it deserved to. The agent picks the tool; this keeps up with it.
 
-### Making an orchestrator visible
+### What each session is on
+
+Hovering a figure in the room, and every card in the panel, leads with two lines that are not
+the last thing the agent said: **the task** it is on, and **what it is doing about it** right
+now — researching, implementing, testing, verifying in the browser, building, running the app,
+committing, delegating to sub-agents, driving the fleet, or asking you something. While it
+works, the phase is followed by the thing it is on (`testing · bun test lib/parse`) and the
+story of the turn so far (`researched → implemented → testing`); once it stops, the last thing
+it said takes over, with the turn's story under it as the hint of how it got there.
+
+Both come from the same places the rest of the picture does, best source first:
+
+- **The task.** Claude Code writes its own title for a session into the transcript (an
+  `ai-title` record), generated from the actual exchange — so a workspace called `pt-666`
+  reads as what PT-666 turned out to be about. Where there is none, the Superset task the
+  workspace was opened for is asked for by id (`superset tasks get`, once, and remembered),
+  which is the only source for a Codex agent or a session on another machine. Failing both,
+  the opening of the prompt the agent is acting on. A title that would only repeat the
+  workspace name is left out. The card's hover says which source it was.
+- **The phase.** Read off the tool calls of the current turn: the transcript's `tool_use`
+  records when this machine has them, which is exact, and the tool rows on the screen when it
+  does not, which is the same best-effort guess as everything else read off a screen. A turn
+  starts at each prompt. The rules — which tool or shell command means which phase — are in
+  `lib/activity.js`, one place, with the cases that motivated them in `test/activity.test.js`.
+  One read tucked in behind an edit does not flip "implementing" back to "researching"; a run
+  of them does.
+
+## Making an orchestrator visible
 
 Orchestrators are **elected**, not configured, there can be several at once, and the evidence
 accumulates across polls rather than being re-derived from each screen. A workspace becomes a
