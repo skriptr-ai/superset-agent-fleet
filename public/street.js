@@ -8,7 +8,7 @@
 import { TILE_W, TILE_H, iso, isoBox, px, C } from './draw.js';
 import { KITCHEN_ROWS, COUNTER_Y, STOOL_X, FLOOR_X, HOUSE_WALL_H } from './district.js';
 
-const S = {
+export const S = {
   asphalt: '#2b2f38',
   asphaltAlt: '#282c34',
   asphaltLine: '#333844',
@@ -23,7 +23,7 @@ const S = {
 };
 
 /** Building palettes, indexed by a plan's `style`. */
-function tint(hex, delta) {
+export function tint(hex, delta) {
   const n = parseInt(hex.slice(1), 16);
   const c = (v) => Math.max(0, Math.min(255, v + delta));
   return `#${((c(n >> 16) << 16) | (c((n >> 8) & 255) << 8) | c(n & 255)).toString(16).padStart(6, '0')}`;
@@ -33,7 +33,7 @@ function tint(hex, delta) {
  * A quad on the face that looks down-left (toward the pavement), given in face coordinates:
  * `u` runs along +x in tiles from the face's left corner, `v` runs straight up in pixels.
  */
-function faceQuad(ctx, x, yFront, u0, u1, v0, v1, fill) {
+export function faceQuad(ctx, x, yFront, u0, u1, v0, v1, fill) {
   const a = iso(x + u0, yFront);
   const b = iso(x + u1, yFront);
   ctx.fillStyle = fill;
@@ -115,6 +115,10 @@ export function buildGround(district) {
       }
       if (y >= street.roadY && y < roadEnd) {
         tile(`r${even}`, even ? S.asphalt : S.asphaltAlt, S.asphaltLine, x, y);
+      } else if (y < street.roadY && !inside(x) && district.city.isRoadColumn(x)) {
+        // A side street comes down through the far pavement to meet the road; the city draws
+        // the asphalt there, so the pavement must not.
+        continue;
       } else {
         tile(`p${even}`, even ? S.slab : S.slabAlt, S.slabLine, x, y);
       }
@@ -136,12 +140,23 @@ export function buildGround(district) {
 
   const kerbTop = [];
   const kerbFace = [];
-  for (const y of [street.roadY, roadEnd]) {
-    const a = iso(0, y);
-    const b = iso(w, y);
+  const kerb = (x0, x1, y) => {
+    const a = iso(x0, y);
+    const b = iso(x1, y);
     kerbTop.push([a.x, a.y, b.x, b.y, b.x, b.y - 2, a.x, a.y - 2]);
     kerbFace.push([a.x, a.y, b.x, b.y, b.x, b.y + 2, a.x, a.y + 2]);
+  };
+  kerb(0, w, roadEnd);
+  // The far kerb is dropped wherever a side street meets the road.
+  let from = 0;
+  for (let x = 0; x <= w; x++) {
+    const onRoad = x < w && !inside(x) && district.city.isRoadColumn(x);
+    if (onRoad) {
+      if (x > from) kerb(from, x, street.roadY);
+      from = x + 1;
+    }
   }
+  if (w > from) kerb(from, w, street.roadY);
   band(S.kerbTop, kerbTop);
   band(S.kerb, kerbFace);
 
@@ -179,26 +194,6 @@ export function drawGround(ctx, layers) {
   }
 }
 
-/** A wash of city light behind the block, so the towers have something to stand against. */
-export function skyGlow(ctx, district) {
-  const { w, d } = district;
-  const left = iso(0, d).x - 700;
-  const right = iso(w, 0).x + 700;
-  const top = iso(0, 0).y - 380;
-  const height = 560;
-  // Both horizontal edges of the wash fade to nothing, so the only hard edges it has are the
-  // vertical ones — and those are pushed far enough out to be off the canvas at any fit.
-  const g = ctx.createLinearGradient(0, top, 0, top + height);
-  g.addColorStop(0, 'rgba(30,40,70,0)');
-  g.addColorStop(0.55, 'rgba(48,58,96,0.5)');
-  g.addColorStop(0.85, 'rgba(96,80,120,0.2)');
-  g.addColorStop(1, 'rgba(96,80,120,0)');
-  ctx.save();
-  ctx.fillStyle = g;
-  ctx.fillRect(left, top, right - left, height);
-  ctx.restore();
-}
-
 // ── the block next door ──────────────────────────────────────────────────────────────────────
 
 /**
@@ -206,7 +201,7 @@ export function skyGlow(ctx, district) {
  * `drop` how far its outer lip hangs below where it is fixed — between them they decide what
  * the canopy covers, which for a serving hatch is the difference between shade and a lid.
  */
-function awning(ctx, x, yF, width, v, depth, colorA, colorB, drop = 7) {
+export function awning(ctx, x, yF, width, v, depth, colorA, colorB, drop = 7) {
   const steps = Math.max(4, Math.round(width / 0.22));
   for (let i = 0; i < steps; i++) {
     const u0 = (i / steps) * width;
@@ -258,11 +253,11 @@ function faceTextFit(ctx, x, yF, u, v, text, maxPx, size, color, weight = 700) {
 
 export function streetProp(ctx, prop, t) {
   const { kind, x, y } = prop;
-  if (kind === 'lamp') return streetLamp(ctx, x, y, t);
+  if (kind === 'lamp') return streetLamp(ctx, x, y);
   if (kind === 'bench') return bench(ctx, x, y);
   if (kind === 'bin') return bin(ctx, x, y);
   if (kind === 'hydrant') return hydrant(ctx, x, y);
-  if (kind === 'tree') return tree(ctx, x, y, t);
+  if (kind === 'tree') return tree(ctx, x, y);
   if (kind === 'busStop') return busStop(ctx, x, y, t);
   if (kind === 'newsstand') return newsstand(ctx, x, y, t);
   if (kind === 'phoneBox') return phoneBox(ctx, x, y, t);
@@ -274,15 +269,14 @@ export function streetProp(ctx, prop, t) {
   return undefined;
 }
 
-/** A street tree: a trunk in a grate, and a canopy that shifts a pixel in the wind. */
-function tree(ctx, x, y, t) {
+/** A street tree: a trunk in a grate, and a canopy that stays put. */
+function tree(ctx, x, y) {
   const p = iso(x + 0.5, y + 0.5);
   ctx.fillStyle = '#2a2f36';
   ctx.beginPath();
   ctx.ellipse(p.x, p.y, 9, 4.5, 0, 0, Math.PI * 2);
   ctx.fill();
   px(ctx, p.x - 2, p.y - 22, '#5a4028', 4, 22);
-  const sway = Math.sin(t / 1700 + x) > 0 ? 1 : 0;
   for (const [dx, dy, r, c] of [
     [-8, -26, 8, '#2f6b3e'],
     [7, -29, 8, '#3fa34d'],
@@ -293,7 +287,7 @@ function tree(ctx, x, y, t) {
   ]) {
     ctx.fillStyle = c;
     ctx.beginPath();
-    ctx.ellipse(p.x + dx + sway, p.y + dy, r, r * 0.68, 0.3, 0, Math.PI * 2);
+    ctx.ellipse(p.x + dx, p.y + dy, r, r * 0.68, 0.3, 0, Math.PI * 2);
     ctx.fill();
   }
 }
@@ -371,30 +365,28 @@ function bollard(ctx, x, y) {
   px(ctx, p.x - 2, p.y - 7, '#c9a227', 4, 2);
 }
 
-function streetLamp(ctx, x, y, t) {
+/** A street lamp, lit. It stays lit: a lamp that blinks reads as a fault, not as a night. */
+function streetLamp(ctx, x, y) {
   const p = iso(x + 0.5, y + 0.5);
   const h = 46;
   px(ctx, p.x - 3, p.y - 3, '#3a4049', 7, 3);
   px(ctx, p.x - 1, p.y - h, '#454c57', 2, h - 2);
   px(ctx, p.x - 1, p.y - h - 1, '#545c69', 7, 2);
-  const on = Math.sin(t / 900 + x) > -0.96;
-  px(ctx, p.x + 4, p.y - h + 1, on ? '#ffe9a8' : '#7d7457', 5, 4);
-  if (on) {
-    ctx.save();
-    ctx.globalAlpha = 0.09;
-    ctx.fillStyle = '#ffe1a0';
-    ctx.beginPath();
-    ctx.moveTo(p.x + 6, p.y - h + 4);
-    ctx.lineTo(p.x + 24, p.y + 5);
-    ctx.lineTo(p.x - 12, p.y + 5);
-    ctx.closePath();
-    ctx.fill();
-    ctx.globalAlpha = 0.07;
-    ctx.beginPath();
-    ctx.ellipse(p.x + 6, p.y + 2, 20, 9, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.restore();
-  }
+  px(ctx, p.x + 4, p.y - h + 1, '#ffe9a8', 5, 4);
+  ctx.save();
+  ctx.globalAlpha = 0.09;
+  ctx.fillStyle = '#ffe1a0';
+  ctx.beginPath();
+  ctx.moveTo(p.x + 6, p.y - h + 4);
+  ctx.lineTo(p.x + 24, p.y + 5);
+  ctx.lineTo(p.x - 12, p.y + 5);
+  ctx.closePath();
+  ctx.fill();
+  ctx.globalAlpha = 0.07;
+  ctx.beginPath();
+  ctx.ellipse(p.x + 6, p.y + 2, 20, 9, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
 }
 
 function bench(ctx, x, y) {
@@ -614,10 +606,10 @@ export function houseSilhouette(house) {
   ];
 }
 
-/** The railing at the front of the pavement: the world has to stop somewhere. */
-export function backRailing(ctx, w, y) {
-  const a = iso(0, y);
-  const b = iso(w, y);
+/** The railing along the quay, from tile column `x0` to `x1`: the pavement stops at the water. */
+export function backRailing(ctx, x0, x1, y) {
+  const a = iso(x0, y);
+  const b = iso(x1, y);
   ctx.strokeStyle = '#3d434d';
   ctx.lineWidth = 2;
   for (const v of [16, 9]) {
@@ -626,7 +618,7 @@ export function backRailing(ctx, w, y) {
     ctx.lineTo(b.x, b.y - v);
     ctx.stroke();
   }
-  for (let x = 0; x <= w; x += 0.5) {
+  for (let x = x0; x <= x1; x += 0.5) {
     const p = iso(x, y);
     px(ctx, p.x - 1, p.y - 18, '#464d57', 2, 18);
   }
