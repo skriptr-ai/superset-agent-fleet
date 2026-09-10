@@ -1,22 +1,22 @@
-// The district: a restaurant for every orchestrator, and the street they stand on.
+// One restaurant, and the street it stands on.
 //
-// A restaurant is one orchestration and nothing else — a chef, and the sessions that chef is
-// driving. There is exactly one chef per restaurant and one restaurant per chef: the block is
-// built from the orchestrators the server elected, in the order it elected them, so a fleet
-// with one orchestrator is one restaurant rather than one restaurant and an empty room next to
-// it. Everyone nobody is supervising is outside on the pavement eating from the food carts,
-// and the moment an orchestrator first messages one of them, that session puts its food down,
-// crosses the road and comes in.
+// The room is the whole fleet, and it is read in two halves.
 //
-// The rooms are cutaways: no roof, no front wall, the whole dining room in view. Nothing else
-// stands on the block — in this projection anything to the right of a room is in FRONT of it
-// and rises over the floor, and a building that hides half a dining room earns its place in
-// nothing. The rooms sit five tiles apart, which is the closest a right-hand one's wall can
-// stand without climbing into its neighbour's floor.
+// **The bar is the orchestration.** An orchestrator is the bartender; the sessions it has been
+// observed driving are the ones on the stools in front of it, and every message between them
+// goes straight across the bar — a drink poured out, an empty glass slid back. Several
+// orchestrators run at once, so the bar is divided into patches, one per bartender, laid left
+// to right in the order they were elected. A bar with nobody behind it is still a bar.
 //
+// **The dining room is yours.** The chef in the kitchen is the developer — you — and every
+// session nobody is orchestrating is a customer at a table, waiting on you rather than on an
+// agent. When you send one of them something, a waiter carries it out of the kitchen to that
+// table; when one finishes a turn, a waiter brings the note back to the pass.
+//
+// The room is a cutaway: no roof, no front wall, the whole floor in view. Everything with a
+// position lives on one tile grid; anyone who moves walks it tile by tile along a BFS path.
 // Everything is drawn straight onto the retina canvas at the current zoom, so it is crisp at
-// any scale and zooming is continuous. Everything with a position lives on one tile grid;
-// anyone who moves walks it tile by tile along a BFS path, indoors and out.
+// any scale and zooming is continuous.
 
 import {
   iso,
@@ -36,12 +36,22 @@ import {
   figure,
   dinerPalette,
   chefPalette,
+  bartenderPalette,
   waiterPalette,
   hostPalette,
   lookFor,
   logoVector,
   cardTable,
   tray,
+  barCounter,
+  bottleShelf,
+  barTaps,
+  duckboard,
+  wallWindow,
+  BAR_H,
+  DUCKBOARD_H,
+  stool,
+  drink,
   exclaim,
   fork,
   roundRect,
@@ -50,16 +60,22 @@ import {
   STATUS,
   KIND_COLOR,
 } from './draw.js';
-import { buildDistrict, COUNTER_Y, ENTRANCE_X, MAX_CARTS, HOUSE_WALL_H } from './district.js';
+import {
+  buildDistrict,
+  COUNTER_Y,
+  KITCHEN_ROWS,
+  FLOOR_X,
+  FIRST_TABLE_Y,
+  ENTRANCE_X,
+  HOUSE_WALL_H,
+} from './district.js';
 import {
   skyGlow,
   buildGround,
   drawGround,
   restaurantTerrace,
   houseSilhouette,
-  foodCart,
   streetProp,
-  streetFood,
   backRailing,
   car,
 } from './street.js';
@@ -68,41 +84,25 @@ const WALL_H = HOUSE_WALL_H;
 const ZOOM_MIN = 0.32; // screen pixels per world unit
 const ZOOM_MAX = 6;
 
-/** Sessions with no Superset project of their own share one cart. */
-const NO_PROJECT = 'no-project';
 const CAR_PERIOD = 21_000;
+
+/** The name over the door. There is one restaurant, so there is one name. */
+const HOUSE_NAME = 'The Orchestra';
 
 /** A session must be seen driving this many peers of its own to be a second orchestrator. */
 const SECOND_HUB_MIN = 2;
 
-/**
- * Restaurant names, handed out in the order orchestrators were elected: the longest-standing
- * chef keeps The Orchestra as others open next door. A name is scenery — which kitchen is
- * whose is decided by the election, and the key a house is tracked by is its chef's id.
- */
-const HOUSE_NAMES = [
-  'The Orchestra',
-  'The Architects',
-  'The Foundry',
-  'The Bindery',
-  'The Lantern',
-  'The Almanac',
-];
-
-/** More kitchens than this and the block runs off the far end of the street. */
-const MAX_HOUSES = HOUSE_NAMES.length;
-
-/** The key of the one shut restaurant drawn when nobody is orchestrating anything. */
-const NO_CHEF = 'no-chef';
+/** More bartenders than this and the bar runs off the end of the room. */
+const MAX_BARTENDERS = 4;
 
 /**
  * A spawn means two different things depending on whether anyone sent it.
  *
- * With a sender it is a chef starting a worker and handing it its opening brief — a message,
- * and usually the longest and most consequential one of the whole run. Without a sender it is
- * a session that simply appeared in the fleet, and its `text` is the workspace's NAME rather
- * than anything anybody said; putting that over a head reads as somebody announcing their own
- * name, and on a machine where workspaces come and go, as a wall of them.
+ * With a sender it is an orchestrator starting a worker and handing it its opening brief — a
+ * message, and usually the longest and most consequential one of the whole run. Without a
+ * sender it is a session that simply appeared in the fleet, and its `text` is the workspace's
+ * NAME rather than anything anybody said; putting that over a head reads as somebody
+ * announcing their own name, and on a machine where workspaces come and go, as a wall of them.
  */
 export const isBriefing = (event) =>
   event.kind === 'spawn' && Boolean(event.fromId) && Boolean(event.text);
@@ -117,6 +117,9 @@ const TOAST_MS = 6500;
 const GREET_MS = 1400;
 const WAITERS = 3;
 const PICKUP_MS = 500;
+/** How long a glass takes to travel the bar, and how long it sits there once it lands. */
+const POUR_MS = 520;
+const POUR_HOLD = 900;
 
 export class Scene {
   constructor(canvas) {
@@ -128,38 +131,34 @@ export class Scene {
     this.zoomTarget = null;
     this.zoomAnchor = null;
     this.agents = [];
-    this.hubId = null;
-    /** Every orchestrator the server elected; the houses below name two of them. */
+    /** Every orchestrator the server elected; each one gets a patch of the bar. */
     this.hubIds = [];
     this.links = [];
-    this.homeOf = new Map();
     this.shapeSignature = '';
     this.district = null;
     this.ground = null;
-    /** One per restaurant: its plan, its chef, its tables, its waiters and its own queue. */
-    this.houses = [];
-    this.carts = [];
-    this.cartKeys = '';
-    /** workspaceId → which house it is a guest of, and which of that house's tables it has */
+    /** The restaurant: its plan, its kitchen crew, its bar patches and its order book. */
+    this.room = null;
+    /** workspaceId → the bartender driving it, and which stool of that patch it has */
+    this.barOf = new Map();
+    this.stoolOf = new Map();
+    /** workspaceId → index of the table it has been given */
     this.tableOf = new Map();
-    /** workspaceId → index of the cart it eats at, and its standing place in that cart's line */
-    this.cartOf = new Map();
-    this.streetSpot = new Map();
-    /** workspaceId → which of a cart's three places at the hatch it has, while it is working */
-    this.eatOf = new Map();
+    /** Whoever could not be seated, in the order they arrived. */
+    this.queue = [];
     this.placement = new Map();
     this.blocked = new Set();
     this.blockedStaff = new Set();
     this.movers = [];
+    /** Glasses in transit along the bar, each carrying one message. */
+    this.pours = [];
     this.hitboxes = [];
     this.glances = [];
     this.bubbles = new Map();
     this.toasts = [];
     this.selectedId = null;
     this.hoverId = null;
-    /** The house the pointer is over, and the one a click has pinned open. */
-    this.hoverHouse = null;
-    this.pinnedHouse = null;
+    this.hoverRoom = false;
     this.pointer = { x: 0, y: 0 };
     this.showReads = true;
     this.onSelect = () => {};
@@ -184,7 +183,6 @@ export class Scene {
     // The server sends every orchestrator it has elected, most-driving first. A single id is
     // still accepted so an older server, or a console poke, keeps working.
     this.hubIds = Array.isArray(hubIds) ? hubIds : hubIds ? [hubIds] : [];
-    this.hubId = this.hubIds[0] ?? null;
     this.links = links ?? [];
     this.#layout();
     if (this.needsFit && this.agents.length) {
@@ -194,25 +192,25 @@ export class Scene {
   }
 
   /**
-   * Every orchestrator on the block, longest-standing first — one per restaurant.
+   * Every orchestrator behind the bar, longest-standing first.
    *
-   * The server elects them from evidence the browser cannot see: commands read off screens
-   * over many polls, messages an orchestrator wrote down itself, and the MCP calls its harness
-   * recorded. It also distinguishes commanding a peer from merely reading its screen. So when
-   * it names any at all, those names win and there is one kitchen for each.
+   * The server elects them from evidence the browser cannot see: commands read off screens over
+   * many polls, messages an orchestrator wrote down itself, and the MCP calls its harness
+   * recorded. It also distinguishes commanding a peer from merely reading its screen. So when it
+   * names any at all, those names win.
    *
-   * The derivation below only ever adds to a server that named one. It looks for a second in
-   * the link tally — any other live session driving two or more peers of its own that the
-   * first is not already driving. Such a session is nobody's worker, so it earns a house next
-   * door rather than a table in this one. It counts any link as driving, reads included, which
-   * is the looser rule the server has since dropped, so it is not allowed to open a third.
+   * The derivation below only ever adds to a server that named one. It looks for a second in the
+   * link tally — any other live session driving two or more peers of its own that the first is
+   * not already driving. Such a session is nobody's worker, so it earns its own patch of bar
+   * rather than a stool at somebody else's. It counts any link as driving, reads included, which
+   * is the looser rule the server has since dropped, so it is not allowed to elect a third.
    */
   #electHubs() {
     const alive = new Set(this.agents.map((a) => a.id));
     const elected = this.hubIds.filter((id) => alive.has(id));
-    if (elected.length > 1) return elected.slice(0, MAX_HOUSES);
+    if (elected.length > 1) return elected.slice(0, MAX_BARTENDERS);
 
-    const first = elected[0] ?? (this.hubId && alive.has(this.hubId) ? this.hubId : null);
+    const first = elected[0] ?? null;
     if (!first) return [];
     const driven = new Set(this.links.filter((l) => l.fromId === first).map((l) => l.toId));
     const fan = new Map();
@@ -237,25 +235,8 @@ export class Scene {
   }
 
   /**
-   * The restaurants to build for those chefs, left to right along the street.
-   *
-   * A house is keyed by its chef, so a kitchen changing hands rebuilds the block rather than
-   * quietly re-labelling a room full of somebody else's workers. With nobody orchestrating
-   * anything there is still one restaurant, shut: a street with no frontage at all reads as a
-   * broken picture rather than as a quiet night.
-   */
-  #houseSpecs(hubIds) {
-    const chefs = hubIds.length ? hubIds : [null];
-    return chefs.map((hubId, index) => ({
-      key: hubId ?? NO_CHEF,
-      name: HOUSE_NAMES[index % HOUSE_NAMES.length],
-      hubId,
-    }));
-  }
-
-  /**
-   * One record per worker of `hubId`, both directions folded together. A worker is a session
-   * the chef has DRIVEN — a link outbound from it. The reverse direction alone does not
+   * One record per worker of `hubId`, both directions folded together. A worker is a session the
+   * orchestrator has DRIVEN — a link outbound from it. The reverse direction alone does not
    * qualify: a session that merely read an orchestrator's screen is not one of its workers.
    */
   #connsFor(hubId, taken) {
@@ -287,82 +268,34 @@ export class Scene {
     return conns;
   }
 
-  /** The house a session is a guest of, or null if it is out on the street. */
-  #homeOf(id) {
-    const key = this.homeOf.get(id);
-    return key ? (this.houses.find((h) => h.key === key) ?? null) : null;
+  /** The patch of bar this session is pouring behind, if it is a bartender at all. */
+  #patchOfHub(id) {
+    return this.room?.patches.find((patch) => patch.hubId === id) ?? null;
   }
 
-  /** The house whose chef this session is, if it is one. */
-  #houseOfHub(id) {
-    return this.houses.find((h) => h.hubId && h.hubId === id) ?? null;
+  /** The patch this session is sitting at, if it is on a stool. */
+  #patchOfWorker(id) {
+    const hubId = this.barOf.get(id);
+    return hubId ? this.#patchOfHub(hubId) : null;
   }
 
-  /** What the chef of this session's house has exchanged with it. */
+  #stoolTileOf(id) {
+    const patch = this.#patchOfWorker(id);
+    const index = this.stoolOf.get(id);
+    return patch && index !== undefined ? (patch.stools[index] ?? null) : null;
+  }
+
+  /** What this session's own bartender has exchanged with it. */
   #connOf(id) {
-    for (const house of this.houses) {
-      const conn = house.conns.get(id);
+    for (const patch of this.room?.patches ?? []) {
+      const conn = patch.conns.get(id);
       if (conn) return conn;
     }
     return null;
   }
 
-  /**
-   * Build the whole district: one restaurant per orchestrator, each big enough for its own
-   * orchestration, and a street with one food cart per project that has sessions nobody is
-   * supervising.
-   */
-  #buildDistrict(specs, seatsByKey, cartPlan) {
-    const plan = buildDistrict({
-      houses: specs.map((spec) => ({ ...spec, seats: seatsByKey.get(spec.key) ?? 4 })),
-      carts: cartPlan,
-    });
-    this.district = plan;
-    this.ground = buildGround(plan);
-    this.carts = plan.carts;
-    this.blocked = plan.blocked;
-    this.blockedStaff = plan.blockedStaff;
-    this.cartKeys = cartKeyList(cartPlan);
-    this.houses = plan.houses.map((housePlan, index) => ({
-      key: housePlan.key,
-      plan: housePlan,
-      hubId: specs[index].hubId,
-      conns: new Map(),
-      queue: [],
-      orders: [],
-      chefPose: null,
-      hostPose: null,
-      silhouette: houseSilhouette(housePlan),
-      waiters: housePlan.waiterSeats.slice(0, WAITERS).map((seat, index) => ({
-        index,
-        seat,
-        pal: waiterPalette(index),
-        task: null,
-        pos: null,
-      })),
-    }));
-    this.homeOf = new Map();
-    this.tableOf = new Map();
-    this.cartOf = new Map();
-    this.streetSpot = new Map();
-    this.eatOf = new Map();
-    this.placement = new Map();
-    this.movers = [];
-  }
-
-  /** Where the n-th person in a house's line stands, wrapping to a second row if it fills up. */
-  #queueTile(house, index) {
-    const { ox, w, lobbyY } = house.plan;
-    const perRow = Math.max(1, Math.floor((w - ENTRANCE_X - 1) / 2));
-    return {
-      x: ox + ENTRANCE_X + 2 * (index % perRow),
-      y: lobbyY + 2 + Math.floor(index / perRow),
-    };
-  }
-
   #seatOf(id) {
-    const house = this.#homeOf(id);
-    const slot = house?.plan.slots[this.tableOf.get(id)];
+    const slot = this.room?.plan.slots[this.tableOf.get(id)];
     return slot
       ? {
           tx: slot.tx,
@@ -375,282 +308,231 @@ export class Scene {
       : null;
   }
 
+  /** Where the n-th person in the line stands, wrapping to another row if the lobby fills up. */
+  #queueTile(index) {
+    const { ox, w, lobbyY, d } = this.room.plan;
+    const perRow = Math.max(1, Math.floor((w - ENTRANCE_X - 1) / 2));
+    return {
+      x: ox + ENTRANCE_X + 2 * (index % perRow),
+      y: Math.min(lobbyY + 2 + Math.floor(index / perRow), d - 1),
+    };
+  }
+
   /**
-   * The vans that should be on the kerb. A project keeps its van for as long as the district
-   * stands, even once every one of its sessions has been taken indoors — a van vanishing the
-   * moment its last customer is served would rebuild the world at exactly the wrong moment.
+   * How big the room wants to be, quantised in steps. Rebuilding re-seats everyone where they
+   * stand and throws away whatever walk was in progress — including the one walk that matters
+   * most, a session crossing the floor because it has just been picked up — so sizing to every
+   * single arrival would rebuild the world at exactly the wrong moment.
    */
-  #cartPlan(outsiders) {
-    const wanted = planCarts(outsiders);
-    const plan = this.carts
-      .filter((cart) => !cart.closed)
-      .map(({ key, label }) => ({ key, label }));
-    for (const cart of wanted) {
-      if (plan.some((p) => p.key === cart.key)) continue;
-      if (plan.length >= MAX_CARTS) {
-        // No kerb left: the van nobody is queueing at makes way for the one they are.
-        const idle = plan.findIndex((p) => !wanted.some((c) => c.key === p.key));
-        if (idle === -1) break;
-        plan.splice(idle, 1);
-      }
-      plan.push(cart);
-    }
-    return plan;
+  #shapeOf(barSpec, tables) {
+    const seats = Math.max(6, Math.ceil((tables + 2) / 4) * 4);
+    const bar = barSpec.map((patch) => `${patch.hubId}:${patch.stools}`).join(',');
+    return { seats, signature: `${bar}|${seats}` };
   }
 
-  /** Which house has its roof off: the one pinned by a click, else the one under the pointer. */
-  #openKey() {
-    return this.pinnedHouse ?? this.hoverHouse;
-  }
-
-  #cartOfAgent(id) {
-    const index = this.cartOf.get(id);
-    return index === undefined ? null : (this.carts[index] ?? null);
-  }
-
-  /**
-   * A place at a cart's hatch, held for as long as the session is working. Three people can
-   * eat at a van at once; a fourth stays in the line until one of them is done.
-   */
-  #claimHatch(id, cart) {
-    if (this.eatOf.has(id)) return cart.eat[this.eatOf.get(id)];
-    const taken = new Set();
-    for (const [other, slot] of this.eatOf) {
-      if (this.cartOf.get(other) === cart.index) taken.add(slot);
-    }
-    for (let i = 0; i < cart.eat.length; i++) {
-      if (taken.has(i)) continue;
-      this.eatOf.set(id, i);
-      return cart.eat[i];
-    }
-    return null;
-  }
-
-  /** Where a session on the street belongs right now: at the hatch if working, in line if not. */
-  #streetTarget(agent) {
-    const cart = this.#cartOfAgent(agent.id);
-    if (!cart) return null;
-    const busy = agent.status === 'working' || agent.status === 'waiting';
-    if (busy) {
-      const hatch = this.#claimHatch(agent.id, cart);
-      if (hatch) return { mode: 'eating', tile: hatch };
-    } else {
-      this.eatOf.delete(agent.id);
-    }
-    const spot = this.streetSpot.get(agent.id) ?? 0;
-    return { mode: 'lining', tile: cart.queue[spot % cart.queue.length] };
+  /** Build the room and the street it fronts, at the size the fleet currently needs. */
+  #buildDistrict(barSpec, seats) {
+    const plan = buildDistrict({ house: { key: 'house', name: HOUSE_NAME, seats, bar: barSpec } });
+    this.district = plan;
+    this.ground = buildGround(plan);
+    this.blocked = plan.blocked;
+    this.blockedStaff = plan.blockedStaff;
+    this.room = {
+      plan: plan.house,
+      silhouette: houseSilhouette(plan.house),
+      orders: [],
+      chefPose: null,
+      hostPose: null,
+      tenderPose: new Map(),
+      patches: plan.house.bar.patches.map((patch) => ({
+        ...patch,
+        conns: new Map(),
+        workers: [],
+      })),
+      waiters: plan.house.waiterSeats.slice(0, WAITERS).map((seat, index) => ({
+        index,
+        seat,
+        pal: waiterPalette(index),
+        task: null,
+        pos: null,
+      })),
+    };
+    this.barOf = new Map();
+    this.stoolOf = new Map();
+    this.tableOf = new Map();
+    this.queue = [];
+    this.placement = new Map();
+    this.movers = [];
+    this.pours = [];
   }
 
   /**
-   * How big each house wants to be. Quantised in steps, because rebuilding re-seats everyone
-   * where they stand and throws away whatever walk was in progress — including the one walk
-   * that matters most, a session crossing the road because it has just been picked up. Sizing
-   * to every single arrival would rebuild the world at exactly the wrong moment.
-   */
-  #shapeOf(specs, counts) {
-    const seats = new Map(
-      specs.map((spec) => [
-        spec.key,
-        Math.max(6, Math.ceil(((counts.get(spec.key) ?? 0) + 2) / 4) * 4),
-      ]),
-    );
-    // The houses front the same pavement, so they share a depth; the signature has to say so,
-    // or a rebuild would be decided against a shape the builder would not produce. The keys go
-    // in it too: a kitchen changing hands, or a new one opening, is a different block.
-    const shapes = specs.map((spec) => {
-      const party = Math.max(1, seats.get(spec.key));
-      const cols = Math.max(2, Math.ceil(Math.sqrt(party * 1.4)));
-      return { cols, rows: Math.max(1, Math.ceil(party / cols)) };
-    });
-    const rows = Math.max(1, ...shapes.map((shape) => shape.rows));
-    const keys = specs.map((spec) => spec.key).join(',');
-    return { seats, signature: `${keys}|${shapes.map((s) => s.cols).join('x')}@${rows}` };
-  }
-
-  /**
-   * Seating, the queues, and the pavement.
+   * Who is behind the bar, who is on a stool, who is at a table and who is still in the line.
    *
-   * A restaurant is for one orchestration and nothing else: its chef, and the sessions that
-   * chef has actually been observed driving. Everyone else is a session running on its own and
-   * belongs outside at a cart. A table, once given, is kept for the whole run; so is a place at
-   * a cart, so the street does not reshuffle every time somebody finishes a turn.
+   * A stool belongs to one bartender's patch and is kept for as long as that bartender keeps
+   * driving the session; a table is given once and kept for the whole run. Nobody is ever
+   * outside: the street is scenery now, and the only overflow is the line at the door.
    */
   #layout() {
     const hubIds = this.#electHubs();
-    const specs = this.#houseSpecs(hubIds);
-    const chefs = new Set(hubIds);
-    const connsByKey = new Map();
-    const claimed = new Set(chefs);
-    for (const spec of specs) {
-      // Election order is precedence: a session two chefs have both driven belongs to the
-      // longest-standing of them, and only what is left over can fill the house next door.
-      const conns = this.#connsFor(spec.hubId, claimed);
-      for (const id of conns.keys()) claimed.add(id);
-      connsByKey.set(spec.key, conns);
+    const hubSet = new Set(hubIds);
+    const alive = new Set(this.agents.map((a) => a.id));
+
+    // Election order is precedence: a session two orchestrators have both driven belongs to the
+    // longest-standing of them, and only what is left over can fill the patch next to it.
+    const claimed = new Set(hubSet);
+    const crews = [];
+    for (const hubId of hubIds) {
+      const conns = this.#connsFor(hubId, claimed);
+      const workers = [...conns.keys()].filter((id) => alive.has(id) && !hubSet.has(id));
+      for (const id of workers) claimed.add(id);
+      crews.push({ hubId, conns, workers });
     }
 
-    const guests = this.agents.filter((a) => !chefs.has(a.id));
-    const counts = new Map(
-      specs.map((spec) => [
-        spec.key,
-        guests.filter((a) => connsByKey.get(spec.key).has(a.id)).length,
-      ]),
-    );
-    const outsiders = guests.filter((a) => !claimed.has(a.id));
-    const cartPlan = this.#cartPlan(outsiders);
-    const shape = this.#shapeOf(specs, counts);
+    const guests = this.agents.filter((a) => !hubSet.has(a.id));
+    const tables = guests.filter((a) => !claimed.has(a.id)).length;
+    const barSpec = crews.map((crew) => ({
+      hubId: crew.hubId,
+      stools: Math.max(3, Math.ceil(crew.workers.length / 3) * 3),
+    }));
+    const shape = this.#shapeOf(barSpec, tables);
 
-    if (
-      !this.district ||
-      shape.signature !== this.shapeSignature ||
-      cartKeyList(cartPlan) !== this.cartKeys
-    ) {
-      this.#buildDistrict(specs, shape.seats, cartPlan);
+    if (!this.district || shape.signature !== this.shapeSignature) {
+      this.#buildDistrict(barSpec, shape.seats);
       this.shapeSignature = shape.signature;
     }
     const fresh = this.placement.size === 0;
-    for (const house of this.houses) {
-      house.conns = connsByKey.get(house.key) ?? new Map();
+    for (const patch of this.room.patches) {
+      patch.conns = crews.find((crew) => crew.hubId === patch.hubId)?.conns ?? new Map();
+      patch.workers = [];
     }
 
-    const alive = new Set(guests.map((a) => a.id));
     for (const id of [...this.placement.keys()]) {
-      if (alive.has(id)) continue;
-      this.#forget(id);
+      if (!alive.has(id)) this.#forget(id);
     }
 
-    // A session that has just been picked up gives up its cart; one that is no longer driven,
-    // or that has changed chef, gives up its table. Both then walk to the other place.
-    for (const agent of guests) {
-      const wants = specs.find((spec) => connsByKey.get(spec.key).has(agent.id))?.key ?? null;
-      const has = this.homeOf.get(agent.id) ?? null;
-      if (wants === has) continue;
-      if (has) {
-        const house = this.#homeOf(agent.id);
-        if (house) house.queue = house.queue.filter((q) => q !== agent.id);
-        this.homeOf.delete(agent.id);
-        this.tableOf.delete(agent.id);
-      }
-      if (wants) {
-        this.cartOf.delete(agent.id);
-        this.streetSpot.delete(agent.id);
-        this.eatOf.delete(agent.id);
-        this.homeOf.set(agent.id, wants);
-      }
+    // ── the stools ──────────────────────────────────────────────────────────────────────────
+    // Anyone no longer driven by the bartender whose stool they are on gives it up first, so
+    // the seat is free before the next round of claims goes looking for one.
+    const stillDriven = new Map();
+    for (const crew of crews) for (const id of crew.workers) stillDriven.set(id, crew.hubId);
+    for (const id of [...this.barOf.keys()]) {
+      if (stillDriven.get(id) === this.barOf.get(id)) continue;
+      this.barOf.delete(id);
+      this.stoolOf.delete(id);
     }
 
-    for (const house of this.houses) {
+    for (const crew of crews) {
+      const patch = this.room.patches.find((p) => p.hubId === crew.hubId);
+      if (!patch) continue; // no bar left for this one; its workers take tables instead
       const taken = new Set();
-      for (const [id, slot] of this.tableOf) {
-        if (this.homeOf.get(id) === house.key) taken.add(slot);
+      for (const id of crew.workers) {
+        if (this.barOf.get(id) === crew.hubId) taken.add(this.stoolOf.get(id));
       }
-      const unseated = guests
-        .filter((a) => this.homeOf.get(a.id) === house.key && !this.tableOf.has(a.id))
-        .sort((a, b) => {
-          const ca = house.conns.get(a.id);
-          const cb = house.conns.get(b.id);
-          if (Boolean(ca) !== Boolean(cb)) return ca ? -1 : 1;
-          if (ca && cb) return (cb.lastAt || 0) - (ca.lastAt || 0);
-          return a.name.localeCompare(b.name);
-        });
-      for (const agent of unseated) {
-        const slot = house.plan.slots.findIndex((_, i) => !taken.has(i));
-        if (slot === -1) break;
-        this.tableOf.set(agent.id, slot);
-        taken.add(slot);
+      for (const id of crew.workers) {
+        if (this.barOf.has(id)) continue;
+        let index = 0;
+        while (taken.has(index)) index += 1;
+        if (index >= patch.stools.length) continue;
+        taken.add(index);
+        this.barOf.set(id, crew.hubId);
+        this.stoolOf.set(id, index);
+        this.tableOf.delete(id);
       }
+      patch.workers = crew.workers.filter((id) => this.barOf.get(id) === crew.hubId);
     }
 
-    const byCart = new Map(this.carts.map((cart) => [cart.key, cart]));
-    for (const agent of outsiders) {
-      if (this.cartOf.has(agent.id)) continue;
-      const cart =
-        byCart.get(cartKeyOf(agent)) ?? this.carts.find((c) => !c.closed) ?? this.carts[0];
-      if (!cart) continue;
-      const used = new Set();
-      for (const [other, index] of this.streetSpot) {
-        if (this.cartOf.get(other) === cart.index) used.add(index);
-      }
-      let spot = 0;
-      while (used.has(spot)) spot += 1;
-      this.cartOf.set(agent.id, cart.index);
-      this.streetSpot.set(agent.id, spot);
+    // ── the tables ──────────────────────────────────────────────────────────────────────────
+    const diners = guests.filter((a) => !this.barOf.has(a.id));
+    const seated = new Set();
+    for (const [id, slot] of this.tableOf) {
+      if (this.barOf.has(id)) continue;
+      seated.add(slot);
+    }
+    for (const agent of diners) {
+      if (this.tableOf.has(agent.id)) continue;
+      const slot = this.room.plan.slots.findIndex((_, i) => !seated.has(i));
+      if (slot === -1) break; // full house: the rest wait at the podium
+      this.tableOf.set(agent.id, slot);
+      seated.add(slot);
     }
 
+    // ── the line at the door ────────────────────────────────────────────────────────────────
+    // A session that is resting is not in the room at all: it is outside the rope, waiting to be
+    // shown in. That is the whole point of the line — the floor and the bar show work actually
+    // happening, and the line shows the backlog waiting on somebody to start it.
+    const line = [];
     for (const agent of guests) {
-      const house = this.#homeOf(agent.id);
-      if (house) this.#seatIndoors(agent, house, fresh);
-      else this.#standOutside(agent);
+      const resting = agent.status === 'idle' || agent.status === 'exited';
+      const hasSeat = Boolean(this.#stoolTileOf(agent.id) ?? this.#seatOf(agent.id));
+      if (resting || !hasSeat) line.push(agent.id);
+    }
+    const waiting = new Set(line);
+    this.queue = this.queue.filter((id) => waiting.has(id));
+    for (const id of line) {
+      if (this.queue.includes(id)) continue;
+      // Joining the back of the line, the way a queue works: nobody already in it has to move.
+      this.queue.push(id);
+      if (!fresh) this.room.hostPose = { type: 'wave', until: this.#now() + GREET_MS };
     }
 
-    // Everyone still in a line shuffles up to fill the gap left by whoever was seated.
-    for (const house of this.houses) {
-      house.queue.forEach((id, index) => {
-        const cur = this.placement.get(id);
-        const target = this.#queueTile(house, index);
-        if (!cur || cur.mode !== 'queued') return;
-        if (cur.tile.x === target.x && cur.tile.y === target.y) return;
-        const agent = this.agents.find((a) => a.id === id);
-        if (agent) this.#walk(agent, cur.tile, target, 'queued');
-      });
+    // ── putting everybody where they belong ─────────────────────────────────────────────────
+    for (const hubId of hubIds) {
+      const patch = this.#patchOfHub(hubId);
+      const agent = this.agents.find((a) => a.id === hubId);
+      if (patch && agent) this.#place(agent, 'tending', patch.tender, fresh);
     }
-  }
-
-  #forget(id) {
-    const house = this.#homeOf(id);
-    if (house) house.queue = house.queue.filter((q) => q !== id);
-    this.homeOf.delete(id);
-    this.tableOf.delete(id);
-    this.cartOf.delete(id);
-    this.streetSpot.delete(id);
-    this.eatOf.delete(id);
-    this.placement.delete(id);
-    this.movers = this.movers.filter((m) => m.id !== id);
-  }
-
-  #seatIndoors(agent, house, fresh) {
-    const seat = this.#seatOf(agent.id);
-    if (!seat) return;
-    const wants = agent.status === 'idle' || agent.status === 'exited' ? 'queued' : 'seated';
-    const cur = this.placement.get(agent.id);
-    if (!cur) {
-      // First sight: no walking, just put everyone where they are.
-      if (wants === 'queued') {
-        house.queue.push(agent.id);
-        this.placement.set(agent.id, {
-          mode: 'queued',
-          tile: this.#queueTile(house, house.queue.length - 1),
-        });
-      } else {
-        this.placement.set(agent.id, { mode: 'seated', tile: { x: seat.cx, y: seat.cy } });
+    for (const agent of guests) {
+      const index = this.queue.indexOf(agent.id);
+      if (index >= 0) {
+        this.#place(agent, 'queued', this.#queueTile(index), fresh);
+        continue;
       }
-      return;
-    }
-    if (cur.mode === 'walking' || cur.mode === wants) return;
-    if (wants === 'seated') {
-      house.queue = house.queue.filter((q) => q !== agent.id);
-      this.#walk(agent, cur.tile, { x: seat.cx, y: seat.cy }, 'seated');
-    } else {
-      // The latest arrival takes the front of the line, at the podium, and is greeted.
-      house.queue.unshift(agent.id);
-      this.#walk(agent, cur.tile, this.#queueTile(house, 0), 'queued');
-      if (!fresh) house.hostPose = { type: 'wave', until: this.#now() + GREET_MS };
+      const stoolTile = this.#stoolTileOf(agent.id);
+      if (stoolTile) {
+        this.#place(agent, 'stool', stoolTile, fresh);
+        continue;
+      }
+      const seat = this.#seatOf(agent.id);
+      if (seat) this.#place(agent, 'seated', { x: seat.cx, y: seat.cy }, fresh);
     }
   }
 
-  #standOutside(agent) {
-    const target = this.#streetTarget(agent);
-    if (!target) return;
+  /**
+   * Put somebody where they belong — walking them there if they were already somewhere else.
+   *
+   * Somebody the room has never seen before comes in through the front door and is greeted at
+   * the podium, unless this is the very first layout, when everyone is simply already in place:
+   * a page opened onto a running fleet should show a full restaurant, not a stampede.
+   *
+   * A bartender is the one person who never walks to their station. Electing one changes the
+   * shape of the bar, which rebuilds the room, which puts everybody down where they stand — so
+   * a new bartender is always placed rather than walked, and never has to find a way in behind
+   * its own counter.
+   */
+  #place(agent, mode, tile, fresh) {
     const cur = this.placement.get(agent.id);
     if (!cur) {
-      this.placement.set(agent.id, { mode: target.mode, tile: target.tile });
+      if (fresh) {
+        this.placement.set(agent.id, { mode, tile });
+        return;
+      }
+      this.room.hostPose = { type: 'wave', until: this.#now() + GREET_MS };
+      this.#walk(agent, this.room.plan.door, tile, mode);
       return;
     }
     if (cur.mode === 'walking') return;
-    if (cur.mode === target.mode && cur.tile.x === target.tile.x && cur.tile.y === target.tile.y) {
-      return;
-    }
-    this.#walk(agent, cur.tile, target.tile, target.mode);
+    if (cur.mode === mode && cur.tile.x === tile.x && cur.tile.y === tile.y) return;
+    this.#walk(agent, cur.tile, tile, mode);
+  }
+
+  #forget(id) {
+    this.barOf.delete(id);
+    this.stoolOf.delete(id);
+    this.tableOf.delete(id);
+    this.queue = this.queue.filter((q) => q !== id);
+    this.placement.delete(id);
+    this.movers = this.movers.filter((m) => m.id !== id);
   }
 
   #walk(agent, from, to, thenMode) {
@@ -672,9 +554,9 @@ export class Scene {
   }
 
   /**
-   * Shortest walk between two tiles, avoiding furniture, the kitchen, the buildings and the
-   * road — the road except at the crossing, which is what sends anyone walking in from the
-   * street over the zebra and in at the door.
+   * Shortest walk between two tiles, avoiding the furniture, the kitchen and the back of the
+   * bar — which is what routes a session picked up mid-service around the tables and along the
+   * front of the bar to its stool, rather than straight through the counter.
    */
   #path(from, to, allow = new Set(), staff = false) {
     const { w, d } = this.district;
@@ -707,85 +589,127 @@ export class Scene {
     return path;
   }
 
+  // ── traffic between people ────────────────────────────────────────────────────────────────
+
+  /**
+   * Every message finds its own route across the room.
+   *
+   * Between a bartender and one of its own stools it goes over the bar, because that is the
+   * whole distance between them. Between the kitchen and a table it goes on a tray, because
+   * that is the whole distance between YOU and a session nobody is orchestrating. Anything else
+   * — two sessions talking to each other, a message to somebody still in the line — is simply
+   * spoken where it landed.
+   */
   addEvents(events) {
     const now = this.#now();
-    if (!this.district) return;
+    if (!this.room) return;
     for (const event of events) {
-      // An event belongs to whichever house's chef is at one end of it.
-      const fromHouse = event.fromId ? this.#houseOfHub(event.fromId) : null;
-      const toHouse = event.toId ? this.#houseOfHub(event.toId) : null;
-      const house = fromHouse ?? toHouse;
-      const worker = fromHouse ? event.toId : toHouse ? event.fromId : null;
-      const seat = worker && this.#homeOf(worker) === house ? this.#seatOf(worker) : null;
+      const fromPatch = event.fromId ? this.#patchOfHub(event.fromId) : null;
+      const toPatch = event.toId ? this.#patchOfHub(event.toId) : null;
       // Only actual traffic gets a speech bubble. An unattributed spawn and a gone carry the
       // workspace's NAME as their text — see isBriefing for why that must not be spoken.
-      const readable =
-        Boolean(event.text) &&
-        (event.kind === 'send' ||
-          event.kind === 'inbox' ||
-          event.kind === 'report' ||
-          isBriefing(event));
+      const carries =
+        event.kind === 'send' ||
+        event.kind === 'inbox' ||
+        event.kind === 'report' ||
+        isBriefing(event);
 
-      if (event.kind === 'read' && fromHouse && seat) {
-        if (this.showReads)
+      if (event.kind === 'read' && fromPatch && this.#stoolTileOf(event.toId)) {
+        if (this.showReads) {
           this.glances.push({
-            hubId: house.hubId,
-            workerId: worker,
+            hubId: event.fromId,
+            workerId: event.toId,
             start: now,
             until: now + GLANCE_MS,
           });
+        }
         continue;
       }
 
-      // A briefing is plated like any other dish: the chef wrote it, a waiter carries it out.
-      if (
-        (event.kind === 'send' || event.kind === 'inbox' || isBriefing(event)) &&
-        fromHouse &&
-        seat
-      ) {
-        // The queue copy of a dish already ordered is the same dish; do not plate it twice.
-        const duplicate =
-          house.orders.some((o) => o.kind === 'send' && o.workerId === worker) ||
-          house.waiters.some(
-            (wt) =>
-              wt.task?.kind === 'send' && wt.task.workerId === worker && now - wt.task.since < 6000,
-          );
-        if (!duplicate) house.orders.push({ kind: 'send', workerId: worker, event, since: now });
+      // Over the bar, in whichever direction it is going.
+      if (fromPatch && this.barOf.get(event.toId) === event.fromId && carries) {
+        this.#pour(fromPatch, event.toId, event, 'send', now);
+        continue;
+      }
+      if (event.kind === 'report' && toPatch && this.barOf.get(event.fromId) === event.toId) {
+        this.#pour(toPatch, event.fromId, event, 'report', now);
         continue;
       }
 
-      if (event.kind === 'report' && toHouse && seat) {
-        house.orders.push({ kind: 'report', workerId: worker, event, since: now });
+      // Out of your kitchen to a table, and back again. A dispatch is a message whose text we
+      // never saw — the session went from idle to working and nobody wrote down why — so it is
+      // plated like any other order and served without a word.
+      const mine = !event.fromId && event.toId && this.tableOf.has(event.toId);
+      if (mine && (carries || event.kind === 'dispatch')) {
+        this.#order(
+          'send',
+          event.toId,
+          event.kind === 'dispatch' ? { ...event, text: null } : event,
+          now,
+        );
+        continue;
+      }
+      if (event.kind === 'report' && !event.toId && this.tableOf.has(event.fromId)) {
+        this.#order('report', event.fromId, event, now);
         continue;
       }
 
-      if (
-        readable &&
-        event.toId &&
-        (this.placement.has(event.toId) || this.#houseOfHub(event.toId))
-      ) {
+      if (carries && event.text && event.toId && this.placement.has(event.toId)) {
         this.#say(event.toId, event, now);
       }
     }
     if (this.toasts.length > 4) this.toasts.splice(0, this.toasts.length - 4);
-    for (const house of this.houses) {
-      if (house.orders.length > 12) house.orders.splice(0, house.orders.length - 12);
+    if (this.room.orders.length > 12) this.room.orders.splice(0, this.room.orders.length - 12);
+  }
+
+  /** Send a glass down the bar, carrying one message with it. */
+  #pour(patch, workerId, event, kind, now) {
+    const stoolTile = this.#stoolTileOf(workerId);
+    if (!stoolTile) return;
+    this.pours.push({
+      from: kind === 'report' ? stoolTile.y : patch.tender.y,
+      to: kind === 'report' ? patch.tender.y : stoolTile.y,
+      kind,
+      event,
+      deliverTo: kind === 'report' ? patch.hubId : workerId,
+      start: now,
+      until: now + POUR_MS + POUR_HOLD,
+    });
+    if (kind !== 'report') {
+      this.room.tenderPose.set(patch.hubId, { type: 'pour', until: now + POUR_MS });
     }
   }
 
   /**
-   * Hand the oldest order to a free waiter. An order is a round trip: to the chef for the
-   * dish, out through the gate to the table, and back to the card table — or, for a report,
-   * out to the table for the note and back to the chef with it.
+   * Add one round trip to the kitchen's order book. The queue copy of a dish already ordered is
+   * the same dish, so a message seen twice — once as a send, once from the session's own queue —
+   * is not plated twice.
    */
-  #dispatch(house, now) {
-    while (house.orders.length) {
-      const waiter = house.waiters.find((wt) => !wt.task);
+  #order(kind, workerId, event, now) {
+    const duplicate =
+      this.room.orders.some((o) => o.kind === kind && o.workerId === workerId) ||
+      this.room.waiters.some(
+        (wt) =>
+          wt.task?.kind === kind && wt.task.workerId === workerId && now - wt.task.since < 6000,
+      );
+    if (duplicate) return;
+    this.room.orders.push({ kind, workerId, event, since: now });
+  }
+
+  /**
+   * Hand the oldest order to a free waiter. An order is a round trip: to the pass for the dish,
+   * out through the gate to the table, and back to the card table — or, for a report, out to the
+   * table for the note and back to the kitchen with it.
+   */
+  #dispatchOrders(now) {
+    const room = this.room;
+    while (room.orders.length) {
+      const waiter = room.waiters.find((wt) => !wt.task);
       if (!waiter) return;
-      const order = house.orders.shift();
+      const order = room.orders.shift();
       const seat = this.#seatOf(order.workerId);
       if (!seat) continue;
-      const { pickup, gate } = house.plan;
+      const { pickup, gate } = room.plan;
       const door = { x: gate, y: COUNTER_Y };
       const serve = { x: seat.serveX, y: seat.serveY };
       const allow = new Set([
@@ -801,7 +725,7 @@ export class Scene {
               {
                 pause: HANDOFF_MS,
                 onStart: () =>
-                  (house.chefPose = { type: 'handoff', until: this.#now() + HANDOFF_MS }),
+                  (room.chefPose = { type: 'handoff', until: this.#now() + HANDOFF_MS }),
               },
               { path: walk(pickup, serve), carry: 'send' },
               { pause: SERVE_PAUSE_MS, deliverTo: order.workerId },
@@ -809,9 +733,9 @@ export class Scene {
             ]
           : [
               { path: walk(waiter.seat, serve) },
-              { pause: PICKUP_MS },
+              { pause: PICKUP_MS, deliverTo: order.workerId },
               { path: walk(serve, pickup), carry: 'report' },
-              { pause: SERVE_PAUSE_MS, deliverTo: house.hubId },
+              { pause: SERVE_PAUSE_MS },
               { path: walk(pickup, waiter.seat) },
             ];
       if (legs.some((leg) => leg.path === null)) continue; // unreachable table: skip the order
@@ -829,11 +753,12 @@ export class Scene {
   }
 
   /**
-   * Put a message over someone's head. Several arriving close together stack — a worker
-   * being briefed in three parts should show three bubbles, not the last one — capped so a
-   * chatty orchestrator cannot wallpaper the room.
+   * Put a message over someone's head. Several arriving close together stack — a worker being
+   * briefed in three parts should show three bubbles, not the last one — capped so a chatty
+   * orchestrator cannot wallpaper the room.
    */
   #say(whoId, event, at) {
+    if (!event.text) return;
     const stack = this.bubbles.get(whoId) ?? [];
     // The same line can reach a head twice — a send and its echo from the worker's own queue,
     // or a workspace the CLI briefly lost and found again. Say it once and let it linger.
@@ -848,17 +773,17 @@ export class Scene {
     this.toasts.push({ event, start: at, until: at + TOAST_MS });
   }
 
-  /** `PT-559 ← Orchestra` / `PT-559 → Orchestra`: who is talking to whom, by issue key. */
+  /** `PT-559 ← You` / `PT-559 → You`: who is talking to whom, by issue key. */
   #bubbleHeader(event, byId) {
-    const from = byId.get(event.fromId);
-    const to = byId.get(event.toId);
-    const tag = (agent) => {
+    const tag = (id) => {
+      if (!id) return 'You';
+      const agent = byId.get(id);
       if (!agent) return 'someone';
-      const house = this.#houseOfHub(agent.id);
-      if (house) return house.plan.name.replace(/^The\s+/i, '');
       return issueOf(agent.name, agent.branch).key ?? agent.name.slice(0, 18);
     };
-    return event.kind === 'report' ? `${tag(from)}  →  ${tag(to)}` : `${tag(to)}  ←  ${tag(from)}`;
+    return event.kind === 'report'
+      ? `${tag(event.fromId)}  →  ${tag(event.toId)}`
+      : `${tag(event.toId)}  ←  ${tag(event.fromId)}`;
   }
 
   /**
@@ -871,30 +796,36 @@ export class Scene {
     for (const m of done) m.onDone?.();
     this.movers = this.movers.filter((m) => !done.includes(m));
 
-    for (const house of this.houses) {
-      this.#dispatch(house, t);
-      for (const wt of house.waiters) {
-        if (!wt.task) continue;
-        if (this.#advance(wt.task, t)) {
-          wt.task = null;
-          wt.pos = { ...wt.seat };
-          wt.dir = null;
-          wt.step = 0;
-          wt.carry = null;
-        } else {
-          wt.pos = wt.task.pos ?? wt.pos;
-          wt.dir = wt.task.dir;
-          wt.step = wt.task.step;
-          wt.carry = wt.task.carry;
-        }
+    for (const pour of this.pours) {
+      if (pour.said || t - pour.start < POUR_MS) continue;
+      pour.said = true;
+      this.#say(pour.deliverTo, pour.event, t);
+    }
+    this.pours = this.pours.filter((pour) => t < pour.until);
+
+    if (!this.room) return;
+    this.#dispatchOrders(t);
+    for (const wt of this.room.waiters) {
+      if (!wt.task) continue;
+      if (this.#advance(wt.task, t)) {
+        wt.task = null;
+        wt.pos = { ...wt.seat };
+        wt.dir = null;
+        wt.step = 0;
+        wt.carry = null;
+      } else {
+        wt.pos = wt.task.pos ?? wt.pos;
+        wt.dir = wt.task.dir;
+        wt.step = wt.task.step;
+        wt.carry = wt.task.carry;
       }
     }
   }
 
   /**
    * Advance one walker along its legs; returns true once it has finished them all. A leg is
-   * either a path (walked one tile per STEP_MS) or a pause, at the start of which something
-   * may happen (the chef hands over a dish) and at the end of which a message is delivered.
+   * either a path (walked one tile per STEP_MS) or a pause, at the start of which something may
+   * happen (the chef hands over a dish) and at the end of which a message is delivered.
    */
   #advance(m, t) {
     if (t < m.start) return false;
@@ -938,34 +869,41 @@ export class Scene {
 
   /**
    * What the camera has to hold. Taken from the actual contents rather than from the grid's
-   * corners: the block next door is a row of solids standing in the dark with no ground under
-   * it, so the grid is much bigger than the picture and fitting to it would leave the world
-   * marooned in the middle of the canvas.
+   * corners: outside the frontage there is nothing to stand on and no ground under it, so the
+   * grid is much wider than the picture and fitting to it would leave the world marooned in the
+   * middle of the canvas.
    */
   #bounds(zone = null) {
     const dist = this.district;
+    const plan = this.room.plan;
     const points = [];
     const at = (x, y, z = 0) => points.push(iso(x, y, z));
-    const house = this.houses.find((h) => h.key === zone);
-    if (house) {
-      const plan = house.plan;
-      at(plan.ox, 0, WALL_H + 52);
-      at(plan.ox + plan.w, 0, WALL_H + 52);
-      at(plan.ox, plan.d + 2);
-      at(plan.ox + plan.w, plan.d + 2);
+    if (zone === 'bar') {
+      at(plan.ox, 0, WALL_H);
+      at(plan.ox + FLOOR_X + 1, 0, WALL_H);
+      at(plan.ox, plan.bar.y0 + plan.bar.len + 1);
+      at(plan.ox + FLOOR_X + 1, plan.bar.y0 + plan.bar.len + 1);
+    } else if (zone === 'tables') {
+      at(plan.ox, FIRST_TABLE_Y - 2, 60);
+      at(plan.ox + plan.w, FIRST_TABLE_Y - 2, 60);
+      at(plan.ox, plan.lobbyY + 2);
+      at(plan.ox + plan.w, plan.lobbyY + 2);
     } else if (zone === 'street') {
       const front = dist.street.roadY - 2;
       at(0, front, 70);
       at(dist.w, front, 70);
       at(0, dist.d);
       at(dist.w, dist.d);
+    } else if (zone === 'room') {
+      at(plan.ox, 0, WALL_H + 52);
+      at(plan.ox + plan.w, 0, WALL_H + 52);
+      at(plan.ox, plan.d + 2);
+      at(plan.ox + plan.w, plan.d + 2);
     } else {
-      for (const plan of dist.houses) {
-        at(plan.ox, 0, WALL_H + 52);
-        at(plan.ox + plan.w, 0, WALL_H + 52);
-        at(plan.ox, plan.d);
-        at(plan.ox + plan.w, plan.d);
-      }
+      at(plan.ox, 0, WALL_H + 52);
+      at(plan.ox + plan.w, 0, WALL_H + 52);
+      at(plan.ox, plan.d);
+      at(plan.ox + plan.w, plan.d);
       at(0, dist.houseDepth - 1);
       at(dist.w, dist.houseDepth - 1);
       at(0, dist.d);
@@ -981,20 +919,14 @@ export class Scene {
     };
   }
 
-  /**
-   * Frame the n-th restaurant along the street, or the street itself when there is no n-th.
-   *
-   * The number of restaurants follows the number of orchestrators, so the digit keys cannot be
-   * pinned to fixed rooms. Falling through to the street keeps `3` meaning the street on the
-   * two-orchestrator block it always meant it on.
-   */
+  /** `1` the whole room, `2` the bar, `3` the tables, anything past that the street. */
   fitZone(index) {
-    const house = this.houses[index];
-    this.fit(false, house ? house.key : 'street');
+    this.fit(false, ['room', 'bar', 'tables'][index] ?? 'street');
   }
 
-  /** The zoom at which the whole district — or one room of it — fits the canvas. */
+  /** The zoom at which the whole district — or one part of it — fits the canvas. */
   fit(immediate = false, zone = null) {
+    if (!this.room) return;
     const b = this.#bounds(zone);
     const cw = this.canvas.clientWidth;
     const ch = this.canvas.clientHeight;
@@ -1012,14 +944,12 @@ export class Scene {
   }
 
   #tileOfAgent(id) {
-    const house = this.#houseOfHub(id);
-    if (house) return house.plan.chef;
     const mover = this.movers.find((m) => m.role === 'diner' && m.id === id && m.pos);
     if (mover) return { x: Math.round(mover.pos.x), y: Math.round(mover.pos.y) };
     return this.placement.get(id)?.tile ?? null;
   }
 
-  /** Glide the camera onto one diner (or the kitchen), or back out to the whole room. */
+  /** Glide the camera onto one person, or back out to the whole room. */
   focus(agentId) {
     const tile = agentId ? this.#tileOfAgent(agentId) : null;
     if (!tile) {
@@ -1049,8 +979,8 @@ export class Scene {
 
   /**
    * Every frame the camera eases toward wherever it is headed. A wheel zoom eases the scale
-   * while re-solving the pan so the world point under the cursor stays under the cursor —
-   * that, more than the easing, is what makes zooming feel attached to the room.
+   * while re-solving the pan so the world point under the cursor stays under the cursor — that,
+   * more than the easing, is what makes zooming feel attached to the room.
    */
   #stepCamera() {
     if (this.zoomTarget !== null) {
@@ -1123,16 +1053,8 @@ export class Scene {
     this.canvas.addEventListener('pointermove', (e) => {
       this.pointer = local(e);
       this.hoverId = this.#agentAt(this.pointer.x, this.pointer.y);
-      const over = this.#houseAt(this.pointer.x, this.pointer.y);
-      const owner = this.hoverId
-        ? (this.#homeOf(this.hoverId) ?? this.#houseOfHub(this.hoverId))
-        : null;
-      this.hoverHouse = over ?? owner?.key ?? null;
-      this.canvas.style.cursor = dragging
-        ? 'grabbing'
-        : this.hoverId || this.hoverHouse
-          ? 'pointer'
-          : 'grab';
+      this.hoverRoom = this.#overRoom(this.pointer.x, this.pointer.y);
+      this.canvas.style.cursor = dragging ? 'grabbing' : this.hoverId ? 'pointer' : 'grab';
       if (!dragging) return;
       const dx = e.clientX - last.x;
       const dy = e.clientY - last.y;
@@ -1153,22 +1075,15 @@ export class Scene {
     this.canvas.addEventListener('pointerleave', () => {
       dragging = false;
       this.hoverId = null;
-      this.hoverHouse = null;
+      this.hoverRoom = false;
     });
     this.canvas.addEventListener('click', (e) => {
       if (moved >= 5) return;
       const at = local(e);
       const id = this.#agentAt(at.x, at.y);
       // Clicking the floor is not a way out: only Esc deselects, so a near-miss on a figure
-      // cannot throw the camera back to the whole block.
-      if (id) {
-        this.select(id);
-        return;
-      }
-      // Clicking a house pins its roof off, so you can look around inside without holding
-      // the pointer perfectly still over it.
-      const key = this.#houseAt(at.x, at.y);
-      if (key) this.pinnedHouse = this.pinnedHouse === key ? null : key;
+      // cannot throw the camera back to the whole room.
+      if (id) this.select(id);
     });
     this.canvas.addEventListener(
       'wheel',
@@ -1187,39 +1102,34 @@ export class Scene {
     });
   }
 
-  /** The two houses as the panel needs them: whose kitchen, and who is in there. */
-  houseState() {
-    return this.houses.map((house) => ({
-      key: house.key,
-      name: house.plan.name,
-      hubId: house.hubId,
-      members: [...this.homeOf].filter(([, key]) => key === house.key).map(([id]) => id),
-    }));
+  /** The room as the panel needs it: who is pouring for whom, and who is out on the floor. */
+  roomState() {
+    return {
+      name: HOUSE_NAME,
+      bar: (this.room?.patches ?? []).map((patch) => ({
+        hubId: patch.hubId,
+        members: patch.workers.slice(),
+      })),
+      tables: [...this.tableOf.keys()],
+      queue: this.queue.slice(),
+    };
   }
 
-  /** What this session's own chef has exchanged with it, whichever house that is. */
+  /** What this session's own bartender has exchanged with it, if it has one. */
   connOf(id) {
     return this.#connOf(id);
   }
 
   select(id) {
     this.selectedId = id;
-    // Picking somebody indoors takes the roof off their house and leaves it off.
-    const house = id ? (this.#homeOf(id) ?? this.#houseOfHub(id)) : null;
-    this.pinnedHouse = house ? house.key : null;
     this.focus(id);
     this.onSelect(id);
   }
 
-  /** The house under a screen point, tested against its real six-sided silhouette. */
-  #houseAt(sx, sy) {
-    if (!this.district) return null;
-    const p = this.#toWorld(sx, sy);
-    // Nearest first: where two roofs overlap, the one in front takes the pointer.
-    for (let i = this.houses.length - 1; i >= 0; i--) {
-      if (inPolygon(p, this.houses[i].silhouette)) return this.houses[i].key;
-    }
-    return null;
+  /** Whether a screen point is over the building, tested against its real silhouette. */
+  #overRoom(sx, sy) {
+    if (!this.room) return false;
+    return inPolygon(this.#toWorld(sx, sy), this.room.silhouette);
   }
 
   // ── rendering ─────────────────────────────────────────────────────────────────────────────
@@ -1258,95 +1168,95 @@ export class Scene {
   }
 
   /**
-   * One pass over the whole district, back to front: the block next door, then the room, then
-   * the frontage that divides them, then the street. Within the room and within the street
-   * everything is painter-sorted by depth; between the four bands the order is fixed, because
-   * a building and a lamp post on the pavement in front of it never need arguing about.
-   */
-  /**
-   * One pass over the whole district, back to front: the ground, the two dining rooms, then the
-   * street in front of them.
-   *
-   * The rooms are painter-sorted with each other, so the right-hand one — which really is
-   * nearer the camera — draws over its neighbour where they meet. Whichever room the pointer is
-   * on goes last instead, so pointing at a room is always enough to see all of it.
+   * One pass over the whole district, back to front: the ground, the dining room, then the
+   * street in front of it. Within the room and within the street everything is painter-sorted by
+   * depth; between the two the order is fixed, because a building and a lamp post on the
+   * pavement in front of it never need arguing about.
    */
   #drawWorld(b, t, byId) {
     const dist = this.district;
     skyGlow(b, dist);
     drawGround(b, this.ground);
+    this.#drawInside(b, t, byId);
 
-    const front = this.houses.find((house) => house.key === this.#openKey()) ?? null;
-    const rooms = [...this.houses].sort((p, q) => p.plan.ox + p.plan.w - (q.plan.ox + q.plan.w));
-    for (const house of rooms) if (house !== front) this.#drawInside(b, house, t, byId);
-    if (front) this.#drawInside(b, front, t, byId);
-
-    // ── the street ──────────────────────────────────────────────────────────────────────────
     const street = [];
     const out = (x, y, layer, draw) => street.push({ depth: (x + y) * 10 + layer, draw });
-    for (const cart of this.carts) {
-      // Depth taken at the van's BACK corner: it is a two-tile solid, and everyone who matters
-      // is standing in front of it.
-      out(cart.x, cart.y, 3, () => foodCart(b, cart, t));
-    }
     for (const prop of dist.props) out(prop.x, prop.y, 5, () => streetProp(b, prop, t));
     for (const traffic of this.#traffic(t)) {
       out(traffic.x, traffic.y, 4, () =>
         car(b, traffic.x, traffic.y, traffic.index, traffic.dir, t, traffic.fade),
       );
     }
-    for (const [id, place] of this.placement) {
-      const agent = byId.get(id);
-      if (!agent || this.#homeOf(id) || place.mode === 'walking') continue;
-      out(place.tile.x, place.tile.y, 6, () => this.#drawStreetPerson(b, agent, place, t));
-    }
-    for (const m of this.movers) {
-      if (!m.pos || m.pos.y < dist.houseDepth) continue;
-      out(m.pos.x, m.pos.y, 6, () => this.#drawWalker(b, m, byId));
-    }
     street.sort((p, q) => p.depth - q.depth);
     for (const item of street) item.draw();
     backRailing(b, dist.w, dist.d);
   }
 
-  /** How many sessions a house is holding — what its sign reports while the roof is on. */
-  #insideCount(house) {
-    let n = 0;
-    for (const key of this.homeOf.values()) if (key === house.key) n += 1;
-    return n;
+  /** Whether the kitchen has anything on: an order waiting, or a waiter out with one. */
+  #kitchenBusy() {
+    return this.room.orders.length > 0 || this.room.waiters.some((wt) => wt.task);
   }
 
-  /** One restaurant with its roof off: the room, everyone in it, and the terrace out front. */
-  #drawInside(b, house, t, byId) {
-    const plan = house.plan;
-    const { ox, w, d, gate, chef, lobbyY, entrance, podium, host, station } = plan;
+  /** The restaurant, with everyone in it. */
+  #drawInside(b, t, byId) {
+    const room = this.room;
+    const plan = room.plan;
+    const { ox, w, d, gate, chef, lobbyY, entrance, podium, host, station, bar } = plan;
 
     walls(b, ox, w, d, WALL_H);
-    for (let y = 6; y < d - 2; y += 5) wallPicture(b, ox, 0, y, -1, 40, t);
-    for (let y = 9; y < d - 2; y += 5) wallLamp(b, ox, 0, y, -1, 48, t);
-    for (let x = ox + 1; x + 2 < ox + w; x += 5) shelf(b, ox, x, 0, 1, 42);
-    for (let x = ox + 3; x < ox + w - 1; x += 5) wallLamp(b, ox, x, 0, 1, 48, t);
+    // The left wall is the back bar for as far as the bar runs, and a dining-room wall below it.
+    const barEnd = bar.y0 + bar.len - 1;
+    for (let y = bar.y0 + 1; y < barEnd; y += 3) bottleShelf(b, ox, y, 46, y);
+    for (let y = barEnd + 2; y < d - 3; y += 5) wallWindow(b, ox, 0, y, -1, 46, t);
+    for (let y = barEnd + 4; y < d - 3; y += 5) wallLamp(b, ox, 0, y, -1, 30, t);
+    // The back wall belongs to the kitchen, which is the only thing standing against it.
+    for (let x = ox + FLOOR_X + 1; x + 3 < ox + w; x += 6) wallWindow(b, ox, x, 0, 1, 46, t);
+    for (let x = ox + FLOOR_X; x + 2 < ox + w; x += 6) shelf(b, ox, x, 0, 1, 30);
+    for (let x = ox + FLOOR_X + 4; x < ox + w - 1; x += 6) wallLamp(b, ox, x, 0, 1, 30, t);
 
     const items = [];
     const add = (x, y, layer, draw) => items.push({ depth: (x + y) * 10 + layer, draw });
 
-    for (let x = ox; x < ox + w; x++)
+    // ── the kitchen, in the back-right corner ───────────────────────────────────────────────
+    for (let x = ox + FLOOR_X; x < ox + w; x++) {
       if (x !== gate) add(x, COUNTER_Y, 5, () => counter(b, x, COUNTER_Y));
-    add(gate, COUNTER_Y, 0, () => serviceBell(b, gate - 0.5, COUNTER_Y + 0.5, 18));
-
-    const hub = byId.get(house.hubId);
-    if (hub) {
-      const cooking = hub.status === 'working';
-      add(chef.x - 1, chef.y, 3, () => stove(b, chef.x - 1, chef.y, cooking, t));
-      add(chef.x, chef.y, 5, () => this.#drawChef(b, house, hub, t));
     }
+    add(gate, COUNTER_Y, 0, () => serviceBell(b, gate - 0.5, COUNTER_Y + 0.5, 18));
+    add(chef.x - 1, chef.y, 3, () => stove(b, chef.x - 1, chef.y, this.#kitchenBusy(), t));
+    add(chef.x, chef.y, 5, () => this.#drawChef(b, t));
     add(station.x, station.y, 5, () => cardTable(b, station.x, station.y, t));
-    for (const wt of house.waiters) {
+    for (const wt of room.waiters) {
       const at = wt.task ? (wt.pos ?? wt.seat) : wt.seat;
       add(at.x, at.y, wt.task ? 6 : 4, () => this.#drawWaiter(b, wt, t));
     }
 
-    // The rope line between the floor and the lobby, with a gap at the entrance.
+    // ── the bar: an L down the left wall and along the back ─────────────────────────────────
+    // The boards go down first, then whoever is standing on them, then the counter in front.
+    for (let y = bar.laneY; y <= barEnd; y++) add(bar.lane, y, 1, () => duckboard(b, bar.lane, y));
+    for (let x = bar.lane + 1; x <= bar.armTo; x++) {
+      add(x, bar.laneY, 1, () => duckboard(b, x, bar.laneY));
+    }
+    for (const patch of room.patches) {
+      const hub = byId.get(patch.hubId);
+      if (hub) add(patch.tender.x, patch.tender.y, 5, () => this.#drawBartender(b, patch, hub, t));
+    }
+    for (let y = bar.y0; y <= barEnd; y++) add(bar.x, y, 5, () => barCounter(b, bar.x, y));
+    for (let x = bar.x + 1; x <= bar.armTo; x++) add(x, bar.y0, 5, () => barCounter(b, x, bar.y0));
+    // Every tile of the counter has a stool at it, whether or not anybody is sitting there.
+    for (const seat of bar.stools) add(seat.x, seat.y, 2, () => stool(b, seat.x, seat.y));
+    for (const patch of room.patches) {
+      add(bar.x, patch.tender.y, 6, () => barTaps(b, bar.x, patch.tender.y));
+    }
+    for (const pour of this.pours) {
+      const k = Math.min(1, (t - pour.start) / POUR_MS);
+      const y = pour.from + (pour.to - pour.from) * k;
+      add(bar.x, y, 8, () => {
+        const p = iso(bar.x + 0.5, y + 0.5, BAR_H);
+        drink(b, p.x, p.y, pour.kind);
+      });
+    }
+
+    // ── the rope line and the lobby ────────────────────────────────────────────────────────
     let prevPost = null;
     for (let x = ox; x <= ox + w; x++) {
       if (x === entrance.x || x === entrance.x + 1) {
@@ -1363,26 +1273,36 @@ export class Scene {
     }
     add(entrance.x, lobbyY, 1, () => doormat(b, entrance.x, lobbyY));
     add(podium.x, podium.y, 5, () => hostStand(b, podium.x, podium.y, t));
-    add(host.x, host.y, 5, () => this.#drawHost(b, house, t));
+    add(host.x, host.y, 5, () => this.#drawHost(b, t));
     add(ox + w - 1, lobbyY + 1, 5, () => plant(b, ox + w - 1, lobbyY + 1));
-    add(ox, COUNTER_Y + 1, 5, () => plant(b, ox, COUNTER_Y + 1));
+    add(ox + FLOOR_X, KITCHEN_ROWS + 1, 5, () => plant(b, ox + FLOOR_X, KITCHEN_ROWS + 1));
+
+    // ── everybody with a place in it ───────────────────────────────────────────────────────
+    // The dining room is laid whether or not anybody is eating in it: an empty restaurant is a
+    // quiet night, and a restaurant with no tables in it is a broken picture.
+    const diningAt = new Map();
+    for (const [id, place] of this.placement) {
+      if (place.mode === 'seated') diningAt.set(this.tableOf.get(id), id);
+    }
+    plan.slots.forEach((slot, index) => {
+      const seat = { tx: slot.tx, ty: slot.ty, cx: slot.tx, cy: slot.ty - 1 };
+      const agent = byId.get(diningAt.get(index));
+      add(seat.cx, seat.cy, 2, () => chair(b, seat.cx, seat.cy));
+      if (agent) add(seat.cx, seat.cy, 5, () => this.#drawDiner(b, agent, seat, t));
+      add(seat.tx, seat.ty, 5, () => this.#drawTable(b, agent, seat, t));
+    });
 
     for (const [id, place] of this.placement) {
-      if (this.#homeOf(id) !== house) continue;
       const agent = byId.get(id);
-      const seat = this.#seatOf(id);
-      if (!agent || !seat) continue;
-      const seated = place.mode === 'seated';
-      add(seat.cx, seat.cy, 2, () => chair(b, seat.cx, seat.cy));
-      if (seated) add(seat.cx, seat.cy, 5, () => this.#drawDiner(b, agent, seat, t));
-      add(seat.tx, seat.ty, 5, () => this.#drawTable(b, agent, seat, seated, t));
-      if (place.mode === 'queued') {
+      if (!agent) continue;
+      if (place.mode === 'stool') {
+        add(place.tile.x, place.tile.y, 5, () => this.#drawPatron(b, agent, place.tile, t));
+      } else if (place.mode === 'queued') {
         add(place.tile.x, place.tile.y, 5, () => this.#drawQueued(b, agent, place.tile, t));
       }
     }
     for (const m of this.movers) {
-      if (!m.pos || m.pos.y >= d) continue;
-      if (m.pos.x < ox - 0.5 || m.pos.x > ox + w + 0.5) continue;
+      if (!m.pos) continue;
       add(m.pos.x, m.pos.y, 6, () => this.#drawWalker(b, m, byId));
     }
 
@@ -1399,7 +1319,7 @@ export class Scene {
     const { street, w } = this.district;
     const lanes = [
       { y: street.roadY + 0.05, dir: -1, gap: 0 },
-      { y: street.roadY + street.roadRows - 1.15, dir: 1, gap: 0.42 },
+      { y: street.roadY + 1.05, dir: 1, gap: 0.42 },
     ];
     const cars = [];
     lanes.forEach((lane, index) => {
@@ -1432,35 +1352,38 @@ export class Scene {
     });
   }
 
-  #person(b, agent, x, y, opts, t) {
+  #person(b, agent, x, y, opts) {
     const look = lookFor(agent.id);
     const anchors = figure(b, x, y, dinerPalette(agent.id), { ...opts, style: look.style });
     this.anchorsOf ??= new Map();
     this.anchorsOf.set(agent.id, anchors);
     this.#hit(agent.id, anchors, 8);
-    void t;
     return anchors;
+  }
+
+  /** Somebody's arm up to be noticed: the one thing that gets an extra signal. */
+  #raiseHand(b, agent, anchors, t) {
+    const look = lookFor(agent.id);
+    const raise = Math.round(Math.abs(Math.sin(t / 220)) * 2);
+    b.fillStyle = look.body;
+    b.fillRect(anchors.handX + 1, anchors.handY - 14 - raise, 3, 12);
+    b.fillStyle = look.skin;
+    b.fillRect(anchors.handX, anchors.handY - 18 - raise, 5, 5);
   }
 
   #drawDiner(b, agent, seat, t) {
     b.save();
     if (this.#emphasis(agent.id) < 1) b.globalAlpha = 0.6;
-    const anchors = this.#person(b, agent, seat.cx, seat.cy, { facing: 'front', z: 6 }, t);
+    if (agent.status === 'exited') b.globalAlpha *= 0.5;
+    const anchors = this.#person(b, agent, seat.cx, seat.cy, { facing: 'front', z: 6 });
     seat.anchors = anchors;
-    if (agent.status === 'waiting') {
-      const look = lookFor(agent.id);
-      const raise = Math.round(Math.abs(Math.sin(t / 220)) * 2);
-      b.fillStyle = look.body;
-      b.fillRect(anchors.handX + 1, anchors.handY - 14 - raise, 3, 12);
-      b.fillStyle = look.skin;
-      b.fillRect(anchors.handX, anchors.handY - 18 - raise, 5, 5);
-    }
+    if (agent.status === 'waiting') this.#raiseHand(b, agent, anchors, t);
     b.restore();
   }
 
-  #drawTable(b, agent, seat, seated, t) {
-    table(b, seat.tx, seat.ty, seated ? agent.status : 'idle', t);
-    if (!seated) return;
+  #drawTable(b, agent, seat, t) {
+    table(b, seat.tx, seat.ty, agent?.status ?? 'idle', t);
+    if (!agent) return;
     const c = iso(seat.tx + 0.5, seat.ty + 0.5, 12);
     this.hitboxes.push({ id: agent.id, x: c.x - 16, y: c.y - 10, w: 32, h: 20 });
     const a = seat.anchors;
@@ -1472,45 +1395,34 @@ export class Scene {
     }
   }
 
+  /**
+   * Somebody on a stool. They sit turned into the bar, elbows on it, which is the whole point:
+   * at a glance the left wall is who is being orchestrated and the floor is who is not, without
+   * reading a single label.
+   */
+  #drawPatron(b, agent, tile, t) {
+    b.save();
+    if (this.#emphasis(agent.id) < 1) b.globalAlpha = 0.6;
+    if (agent.status === 'exited') b.globalAlpha *= 0.5;
+    const anchors = this.#person(b, agent, tile.x, tile.y, { facing: 'back', flip: true, z: 11 });
+    if (agent.status === 'working') {
+      const lift = Math.round(Math.abs(Math.sin(t / 300)) * 3);
+      drink(b, anchors.handX, anchors.handY - 2 - lift, 'send');
+    }
+    if (agent.status === 'waiting') {
+      this.#raiseHand(b, agent, anchors, t);
+      exclaim(b, anchors.headX + 11, anchors.headY - 6, t);
+    }
+    b.restore();
+  }
+
   #drawQueued(b, agent, tile, t) {
     b.save();
     if (this.#emphasis(agent.id) < 1) b.globalAlpha = 0.6;
     if (agent.status === 'exited') b.globalAlpha *= 0.5;
-    this.#person(b, agent, tile.x, tile.y, { facing: 'front' }, t);
-    b.restore();
-  }
-
-  /**
-   * Someone out on the street. Turned toward the van while they are waiting their turn, turned
-   * back around with the food once they have it — which is the whole status story out here,
-   * the same way a table and the line are the whole story inside.
-   */
-  #drawStreetPerson(b, agent, place, t) {
-    const cart = this.#cartOfAgent(agent.id);
-    const eating = place.mode === 'eating';
-    b.save();
-    if (this.#emphasis(agent.id) < 1) b.globalAlpha = 0.6;
-    if (agent.status === 'exited') b.globalAlpha *= 0.5;
-    const anchors = this.#person(
-      b,
-      agent,
-      place.tile.x,
-      place.tile.y,
-      { facing: eating ? 'front' : 'back' },
-      t,
-    );
-    if (eating && agent.status === 'working') {
-      streetFood(b, anchors.handX, anchors.handY - 2, cart?.emblem, t);
-    }
-    if (agent.status === 'waiting') {
-      const look = lookFor(agent.id);
-      const raise = Math.round(Math.abs(Math.sin(t / 220)) * 2);
-      b.fillStyle = look.body;
-      b.fillRect(anchors.handX + 1, anchors.handY - 14 - raise, 3, 12);
-      b.fillStyle = look.skin;
-      b.fillRect(anchors.handX, anchors.handY - 18 - raise, 5, 5);
-      exclaim(b, anchors.headX + 11, anchors.headY - 6, t);
-    }
+    // Turned toward the rope: the line is people waiting to be shown in, not people watching you.
+    const anchors = this.#person(b, agent, tile.x, tile.y, { facing: 'back' });
+    if (agent.status === 'waiting') this.#raiseHand(b, agent, anchors, t);
     b.restore();
   }
 
@@ -1520,25 +1432,30 @@ export class Scene {
     const { dx = 0, dy = 1 } = m.dir ?? {};
     const facing = dx > 0 || dy > 0 ? 'front' : 'back';
     const flip = dx < 0 || dy > 0;
-    this.#person(b, agent, m.pos.x, m.pos.y, { facing, flip, step: m.step ?? 0 }, 0);
+    this.#person(b, agent, m.pos.x, m.pos.y, { facing, flip, step: m.step ?? 0 });
   }
 
-  #drawChef(b, house, hub, t) {
-    const { chef } = house.plan;
-    const pal = chefPalette(hub.id);
-    const pose = house.chefPose && t < house.chefPose.until ? house.chefPose : null;
+  /**
+   * The chef: you. Not a session, so it carries no name, no hitbox and no status — what it is
+   * doing is whatever the kitchen is doing, which is however many messages of yours are on
+   * their way out to the floor.
+   */
+  #drawChef(b, t) {
+    const room = this.room;
+    const { chef } = room.plan;
+    const pal = chefPalette();
+    const pose = room.chefPose && t < room.chefPose.until ? room.chefPose : null;
     const anchors = figure(b, chef.x, chef.y, pal, { facing: 'front', hat: 'chef' });
-    house.chefAnchors = anchors;
-    this.#hit(hub.id, anchors, 12);
+    room.chefAnchors = anchors;
     b.fillStyle = '#e8e8e2';
-    b.fillRect(anchors.headX - 4, anchors.handY - 2, 9, 9);
+    b.fillRect(anchors.headX - 4, anchors.handY - 2, 9, 9); // apron
     b.fillStyle = '#1e1a1a';
     b.fillRect(anchors.headX - 4, anchors.handY - 2, 9, 1);
     if (pose?.type === 'handoff') {
       b.fillStyle = pal.b;
       b.fillRect(anchors.handX, anchors.handY - 6, 8, 3);
       tray(b, anchors.handX + 10, anchors.handY - 6, 'send');
-    } else if (hub.status === 'working') {
+    } else if (this.#kitchenBusy()) {
       const stir = t / 300;
       const sx = anchors.headX - 12 + Math.round(Math.cos(stir) * 2);
       const sy = anchors.handY - 4 + Math.round(Math.sin(stir) * 1.5);
@@ -1550,13 +1467,39 @@ export class Scene {
     }
   }
 
-  #drawHost(b, house, t) {
-    const { host } = house.plan;
+  /** A bartender behind its own patch: an orchestrator, mid-pour or polishing a glass. */
+  #drawBartender(b, patch, hub, t) {
+    const pal = bartenderPalette(hub.id);
+    const anchors = figure(b, patch.tender.x, patch.tender.y, pal, {
+      facing: 'front',
+      z: DUCKBOARD_H,
+    });
+    this.anchorsOf ??= new Map();
+    this.anchorsOf.set(hub.id, anchors);
+    this.#hit(hub.id, anchors, 12);
+    b.fillStyle = '#f6f6f2';
+    b.fillRect(anchors.headX - 2, anchors.headY + 11, 4, 6); // shirt front
+    b.fillStyle = '#c9a227';
+    b.fillRect(anchors.headX - 2, anchors.headY + 12, 4, 2); // bow tie
+    const pose = patch.hubId && this.room.tenderPose.get(patch.hubId);
+    if (pose && t < pose.until) {
+      drink(b, anchors.handX + 2, anchors.handY - 4, 'send');
+    } else if (hub.status === 'working') {
+      // Polishing a glass, which is what a bartender does while it is thinking.
+      const wipe = Math.round(Math.sin(t / 240) * 2);
+      drink(b, anchors.handX + 1, anchors.handY - 3, 'report');
+      b.fillStyle = '#e8e8e2';
+      b.fillRect(anchors.handX + 3 + wipe, anchors.handY - 12, 3, 4);
+    }
+  }
+
+  #drawHost(b, t) {
+    const { host } = this.room.plan;
     const pal = hostPalette();
     const anchors = figure(b, host.x, host.y, pal, { facing: 'front' });
     b.fillStyle = '#1e1a1a';
     b.fillRect(anchors.headX - 2, anchors.headY + 12, 4, 2); // bow tie
-    const waving = house.hostPose && t < house.hostPose.until;
+    const waving = this.room.hostPose && t < this.room.hostPose.until;
     if (waving) {
       const wag = Math.round(Math.sin(t / 90) * 2);
       b.fillStyle = pal.b;
@@ -1602,10 +1545,6 @@ export class Scene {
   // ── screen-space overlays ─────────────────────────────────────────────────────────────────
 
   #headScreen(id) {
-    const house = this.#houseOfHub(id);
-    if (house?.chefAnchors) {
-      return this.#toScreen(house.chefAnchors.headX, house.chefAnchors.headY - 8);
-    }
     const a = this.anchorsOf?.get(id);
     return a ? this.#toScreen(a.headX, a.headY) : null;
   }
@@ -1635,18 +1574,18 @@ export class Scene {
   }
 
   #drawLabels(ctx, byId) {
-    if (!this.district) return;
+    if (!this.room) return;
     const zoomedIn = this.camera.zoom >= 2;
     const focus = this.hoverId ?? this.selectedId;
-    // Three people at the same cart stand a tile apart, which in the isometry is eight pixels
-    // of stagger and nothing like enough for their labels. Anything that would land on top of
-    // one already placed is pushed up until it does not.
+    // Several people at the bar stand a tile apart, which in the isometry is eight pixels of
+    // stagger and nothing like enough for their labels. Anything that would land on top of one
+    // already placed is pushed up until it does not.
     const placed = [];
     const clear = (x, y, w, h) =>
       !placed.some((p) => x < p.x + p.w && x + w > p.x && y < p.y + p.h && y + h > p.y);
     const draw = (agent, at, isHub, conn, tight) => {
       const status = STATUS[agent.status] ?? STATUS.idle;
-      const full = focus === agent.id || isHub;
+      const full = focus === agent.id;
       const issue = issueOf(agent.name, agent.branch);
       const limit = full ? 34 : tight ? 14 : 20;
       const shown = issue.key ? `${issue.key}  ${issue.title}` : agent.name;
@@ -1716,7 +1655,7 @@ export class Scene {
       if (isHub) {
         ctx.font = '700 9px ui-sans-serif, system-ui, sans-serif';
         ctx.textAlign = 'center';
-        const tag = `CHEF · ${(this.#houseOfHub(agent.id)?.plan.name ?? 'ORCHESTRATOR').toUpperCase()}`;
+        const tag = 'BARTENDER';
         const tw = ctx.measureText(tag).width + 14;
         roundRect(ctx, at.x - tw / 2, y - 11, tw, 16, 8);
         ctx.fillStyle = '#c792ea';
@@ -1727,50 +1666,68 @@ export class Scene {
       ctx.restore();
     };
 
-    // The house titles go down first, so every name that follows knows to dodge them.
-    for (const house of this.houses) this.#drawHouseSign(ctx, house, byId, placed);
+    // The house title and the chef go down first, so every name that follows knows to dodge them.
+    this.#drawHouseSign(ctx, byId, placed);
+    this.#drawChefTag(ctx, placed);
 
-    // Every name floats over its own head. The line at the door is dense, so zoomed out only
-    // the person under the cursor gets one there.
     const k = this.camera.zoom;
     for (const [id, place] of this.placement) {
       const agent = byId.get(id);
       const head = this.#headScreen(id);
       if (!agent || !head) continue;
-      const dense = place.mode === 'queued' || place.mode === 'lining';
-      if (dense && !zoomedIn && focus !== id) continue;
-      draw(agent, { x: head.x, y: head.y - 14 * k - 4 }, false, this.#connOf(id), !zoomedIn);
-    }
-    for (const house of this.houses) {
-      const hub = byId.get(house.hubId);
-      const at = this.#headScreen(house.hubId);
-      if (hub && at && focus === hub.id) {
-        draw(hub, { x: at.x, y: at.y - 14 * k - 6 }, true, null, false);
-      }
+      const isHub = Boolean(this.#patchOfHub(id));
+      const dense = place.mode === 'queued' || place.mode === 'stool';
+      if (dense && !zoomedIn && focus !== id && !isHub) continue;
+      draw(
+        agent,
+        // A bartender's label is lifted clear of the bar: it stands with its back to the pass
+        // and a label at the usual height would sit on the one figure it is naming.
+        { x: head.x, y: head.y - 14 * k - (isHub ? 26 : 4) },
+        isHub,
+        isHub ? null : this.#connOf(id),
+        !zoomedIn,
+      );
     }
   }
 
+  /** A small permanent tag over the kitchen, because the chef has no name to hover for. */
+  #drawChefTag(ctx, placed) {
+    const anchors = this.room.chefAnchors;
+    if (!anchors) return;
+    const head = this.#toScreen(anchors.headX, anchors.headY);
+    const y = head.y - 14 * this.camera.zoom - 12;
+    ctx.save();
+    ctx.font = '700 9px ui-sans-serif, system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    const tag = 'YOU · CHEF';
+    const w = ctx.measureText(tag).width + 14;
+    roundRect(ctx, head.x - w / 2, y - 8, w, 16, 8);
+    ctx.fillStyle = '#ffd166';
+    ctx.fill();
+    ctx.fillStyle = '#2a1f05';
+    ctx.fillText(tag, head.x, y);
+    ctx.restore();
+    placed?.push({ x: head.x - w / 2, y: y - 8, w, h: 21 });
+  }
+
   /**
-   * The name over a restaurant, hung above its back wall where there is nothing to collide
-   * with, and under it the state of that orchestration in one line: how many sessions are in
-   * there, how many are mid-turn, and whether any of them is waiting on you.
+   * The name over the restaurant, hung above its back wall where there is nothing to collide
+   * with, and under it the state of the whole fleet in one line: how many are at the bar being
+   * orchestrated, how many are at the tables waiting on you, and whether any of them is stuck.
    */
-  #drawHouseSign(ctx, house, byId, placed) {
-    const plan = house.plan;
+  #drawHouseSign(ctx, byId, placed) {
+    const plan = this.room.plan;
     const ridge = iso(plan.ox + plan.w / 2, 0, WALL_H + 30);
     const at = this.#toScreen(ridge.x, ridge.y);
     if (at.x < -180 || at.x > this.canvas.clientWidth + 180) return;
-    const inside = this.#insideCount(house);
-    const working = [...this.homeOf]
-      .filter(([, key]) => key === house.key)
-      .filter(([id]) => byId.get(id)?.status === 'working').length;
-    const waiting = [...this.homeOf]
-      .filter(([, key]) => key === house.key)
-      .filter(([id]) => byId.get(id)?.status === 'waiting').length;
-    const shut = !house.hubId;
-    const sub = shut
-      ? 'no orchestrator'
-      : `${inside} inside · ${working} working${waiting ? ` · ${waiting} waiting on you` : ''}`;
+    const count = (mode) => [...this.placement.values()].filter((p) => p.mode === mode).length;
+    const waiting = [...this.placement.keys()].filter(
+      (id) => byId.get(id)?.status === 'waiting',
+    ).length;
+    const sub = `${count('stool')} at the bar · ${count('seated')} dining · ${count('queued')} in line${
+      waiting ? ` · ${waiting} waiting on you` : ''
+    }`;
 
     ctx.save();
     ctx.textBaseline = 'middle';
@@ -1782,15 +1739,9 @@ export class Scene {
     const height = 38;
     const x = at.x - width / 2;
     const y = at.y - height - 8;
-    ctx.globalAlpha = shut ? 0.6 : 1;
     ctx.fillStyle = 'rgba(13,18,26,0.92)';
-    ctx.strokeStyle =
-      this.hoverHouse === house.key
-        ? '#ffd166'
-        : shut
-          ? 'rgba(255,255,255,0.14)'
-          : 'rgba(199,146,234,0.7)';
-    ctx.lineWidth = this.hoverHouse === house.key ? 1.6 : 1;
+    ctx.strokeStyle = this.hoverRoom ? '#ffd166' : 'rgba(199,146,234,0.7)';
+    ctx.lineWidth = this.hoverRoom ? 1.6 : 1;
     roundRect(ctx, x, y, width, height, 8);
     ctx.fill();
     ctx.stroke();
@@ -1804,7 +1755,7 @@ export class Scene {
     ctx.fillStyle = '#eef3f9';
     ctx.font = '700 12px ui-sans-serif, system-ui, sans-serif';
     ctx.fillText(plan.name, at.x, y + 13);
-    ctx.fillStyle = waiting ? '#ffbf47' : shut ? '#6f7f95' : '#8b9cb3';
+    ctx.fillStyle = waiting ? '#ffbf47' : '#8b9cb3';
     ctx.font = '500 10.5px ui-monospace, SFMono-Regular, monospace';
     ctx.fillText(sub, at.x, y + 27);
     ctx.restore();
@@ -1883,17 +1834,18 @@ export class Scene {
     ctx.save();
     ctx.font = '500 11.5px ui-sans-serif, system-ui, sans-serif';
     const lines = agent.says ? wrapText(ctx, agent.says, 230, 3) : [];
-    const cart = this.#cartOfAgent(id);
     const where =
-      place?.mode === 'queued'
-        ? 'in line at the door'
-        : place?.mode === 'walking'
-          ? 'on the way'
-          : place?.mode === 'eating'
-            ? `at the ${cart?.label ?? 'cart'} van`
-            : place?.mode === 'lining'
-              ? `queueing at ${cart?.label ?? 'a cart'}`
-              : null;
+      place?.mode === 'tending'
+        ? 'behind the bar'
+        : place?.mode === 'stool'
+          ? 'on a stool at the bar'
+          : place?.mode === 'queued'
+            ? 'in line at the door'
+            : place?.mode === 'walking'
+              ? 'on the way'
+              : place?.mode === 'seated'
+                ? 'at a table'
+                : null;
     const wrap = (text, font, color, max) => {
       ctx.font = font;
       return wrapText(ctx, text, 236, max).map((line) => ({ text: line, font, color }));
@@ -1909,14 +1861,16 @@ export class Scene {
       ...(conn
         ? [
             {
-              text: `${conn.sends} dishes served · ${conn.replies} sent back · ${conn.reads} check-ins`,
+              text: `${conn.sends} poured · ${conn.replies} sent back · ${conn.reads} check-ins`,
               font: '500 10.5px ui-monospace, SFMono-Regular, monospace',
               color: '#8b9cb3',
             },
           ]
         : [
             {
-              text: 'not being orchestrated — out on the street',
+              text: this.#patchOfHub(id)
+                ? 'orchestrating the stools in front of it'
+                : 'nobody is orchestrating it — one of yours',
               font: '500 10.5px ui-monospace, SFMono-Regular, monospace',
               color: '#8b9cb3',
             },
@@ -1967,11 +1921,11 @@ export class Scene {
     for (let i = live.length - 1; i >= 0; i--) {
       const toast = live[i];
       const { event } = toast;
-      const from = byId.get(event.fromId)?.name ?? 'someone';
-      const to = byId.get(event.toId)?.name ?? 'someone';
+      const from = event.fromId ? (byId.get(event.fromId)?.name ?? 'someone') : 'You';
+      const to = event.toId ? (byId.get(event.toId)?.name ?? 'someone') : 'the kitchen';
       const header =
         event.kind === 'report'
-          ? `${short(from)}  sent word back to the kitchen`
+          ? `${short(from)}  sent word back`
           : `${short(from)}  →  ${short(to)}`;
       ctx.save();
       ctx.font = '500 12px ui-sans-serif, system-ui, sans-serif';
@@ -2001,7 +1955,7 @@ export class Scene {
   }
 }
 
-/** Ray-casting point-in-polygon, for hit-testing a building's silhouette. */
+/** Ray-casting point-in-polygon, for hit-testing the building's silhouette. */
 function inPolygon(point, polygon) {
   let inside = false;
   for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
@@ -2021,30 +1975,3 @@ function clamp(zoom) {
 function short(name) {
   return name.length > 34 ? `${name.slice(0, 33)}…` : name;
 }
-
-/**
- * Which cart a session eats at. Superset's ad-hoc sessions carry no project, so they share
- * one van between them — the same rule the project filter in the top bar uses.
- */
-function cartKeyOf(agent) {
-  return agent.type === 'session' || !agent.project ? NO_PROJECT : agent.project;
-}
-
-/** One cart per project with sessions on the street, in a stable order (the nameless one last). */
-function planCarts(outsiders) {
-  const counts = new Map();
-  for (const agent of outsiders) {
-    const key = cartKeyOf(agent);
-    counts.set(key, (counts.get(key) ?? 0) + 1);
-  }
-  return [...counts]
-    .sort((a, b) => (a[0] === NO_PROJECT) - (b[0] === NO_PROJECT) || a[0].localeCompare(b[0]))
-    .slice(0, MAX_CARTS)
-    .map(([key, count]) => ({
-      key,
-      label: key === NO_PROJECT ? 'Sessions' : key,
-      count,
-    }));
-}
-
-const cartKeyList = (carts) => carts.map((c) => c.key).join('|');

@@ -1,192 +1,247 @@
-// The district: the restaurants and the street outside them, laid out on ONE tile grid.
+// The district: one restaurant and the street outside it, laid out on ONE tile grid.
 //
-// The whole point of a single grid is the walk. A session that has been eating from a cart on
-// the pavement and is then picked up by an orchestrator does not blink out of one scene and
-// into another: it puts its food down, crosses the road at that restaurant's crossing, and
-// comes in through its door — one BFS over one grid, because there is only ever one world.
+// The whole point of a single grid is the walk. A session that has been eating at a table and
+// is then picked up by an orchestrator does not blink out of one place and into another: it
+// gets up, crosses the dining room and takes a stool at the bar — one BFS over one grid,
+// because there is only ever one world.
 //
-// Geometry only. Nothing here knows about agents, time or the canvas. It answers "where do the
-// tables go, where do the vans park, what can be walked on", and the scene puts people on it.
+// Geometry only. Nothing here knows about agents, time or the canvas. It answers "where does
+// the bar run, where do the tables go, where do the vans park, what can be walked on", and the
+// scene puts people on it.
 
-import { hash } from './draw.js';
+// ── the restaurant, corner by corner ─────────────────────────────────────────────────────────
+//
+// The room has two halves and they meet at the back-left corner, so neither is ever behind the
+// other and there is a way between them.
+//
+//   THE BAR is an L. Its long leg runs down the LEFT WALL to the top of the lobby; its short
+//   arm turns at the corner and runs along the BACK WALL until it reaches the kitchen. Three
+//   columns wide down the leg, three rows deep along the arm:
+//
+//     x = 0  /  y = 0   behind the bar: the bartenders' own lane, and the way through
+//     x = 1  /  y = 1   the counter itself
+//     x = 2             the stools, down the leg only — the arm is the service end
+//     x = 3, 4          the aisle in front of them, which is also the way in from the door
+//
+//   THE KITCHEN is a small block in the BACK-RIGHT corner, starting at x = FLOOR_X so the bar
+//   never has to run in front of it:
+//
+//     y = 0..2  the stove, the developer's own station, the waiters' card table
+//     y = 3     the pass, with a gate at its right-hand end for the waiters
+//
+// The lane behind the bar runs into the kitchen's back row, so the chef could walk out of the
+// kitchen, along behind the bar and all the way down it without crossing the floor once. It
+// never does — the chef stays at the stove and the bartenders stay at their patches — but the
+// room is built as though it could, which is what makes the two halves read as one place.
+//
+// Everything from x = FLOOR_X and y = FIRST_TABLE_Y down to the rope line is the dining room,
+// and below the rope line is the lobby, the podium and the door onto the street.
 
-// ── the restaurants ──────────────────────────────────────────────────────────────────────────
+export const BAR_LANE_X = 0;
+export const BAR_X = 1;
+export const STOOL_X = 2;
+/** The arm of the L: the lane turns the corner along this row, the counter along the next. */
+export const BAR_LANE_Y = 0;
+export const BAR_ARM_Y = 1;
+/** The first row of stools. The counter's top tile is the elbow, and nobody sits at an elbow. */
+export const STOOL_Y0 = 2;
+/** The first column that is kitchen or dining room; everything left of it belongs to the bar. */
+export const FLOOR_X = 5;
 
-export const KITCHEN_ROWS = 4; // y = 0..3 is the kitchen; the counter runs along y = 4
-export const COUNTER_Y = 4;
-export const FIRST_TABLE_Y = 8;
+export const KITCHEN_ROWS = 3;
+export const COUNTER_Y = 3;
+export const FIRST_TABLE_Y = 6;
 export const TABLE_GAP = 4;
-export const ENTRANCE_X = 2; // the rope gap, the front door and the crossing all line up
+/** The rope gap, the front door and the crossing all line up, on the aisle beside the bar. */
+export const ENTRANCE_X = 4;
 
-/** How tall a restaurant's two back walls stand. The rooms have no roof and no front. */
+/** How tall the restaurant's two back walls stand. The room has no roof and no front. */
 export const HOUSE_WALL_H = 72;
 
 /**
- * The alley between two neighbouring restaurants.
+ * How much counter the bar always has, however few people are drinking at it.
  *
- * Five tiles, and the number is not arbitrary. In this projection the right-hand room is nearer
- * the camera, so its left wall rises in front of its neighbour's floor; at the same screen
- * column that wall's base sits sixteen pixels lower for every tile of gap. At five tiles it is
- * eighty pixels down, the wall is seventy-two tall, and its top clears the neighbour's floor
- * entirely. Any closer and one dining room starts eating into the other.
+ * The bar is the half of the picture that has to scale: a fleet can put a lot of sessions under
+ * one orchestrator, and every one of them wants a stool. Eleven tiles of counter is ten stools,
+ * which is the floor; the room is cut deeper than that whenever the patches ask for it.
  */
-const HOUSE_GAP = 5;
+const BAR_MIN = 11;
 
-// ── the street, as bands of rows below the restaurants' frontage ─────────────────────────────
+/** Elbow room on the bar between one bartender's patch and the next. */
+const BAR_ELBOW = 1;
 
-export const WALK_ROWS = 2; // pavement outside the doors
+/** Rows of clear floor between the end of the bar and the rope line. */
+const BAR_TO_ROPE = 2;
+
+/** Fewer tables than this and the dining room reads as a corridor rather than a restaurant. */
+const MIN_TABLE_COLS = 3;
+
+// ── the street, as bands of rows below the restaurant's frontage ──────────────────────────────
+
+export const WALK_ROWS = 2; // pavement outside the door
 export const ROAD_ROWS = 3; // two lanes and the centre line
-export const CART_ROWS = 2; // the vans stand on the near pavement, hard against the kerb
-export const CROWD_ROWS = 3; // where everyone eating from a cart stands
+export const KERB_ROWS = 2; // the near pavement, where the parked cars and the shelter stand
+export const CROWD_ROWS = 3; // the far pavement, where the railing runs
 
-const CART_W = 3;
-const CART_MIN_PITCH = 6;
-const CART_X0 = 2;
-const MIN_CARTS = 3; // a street with one van on it does not read as a street
-export const MAX_CARTS = 7;
+/** The tiles the bartenders' patches actually take up, elbow room between them included. */
+function barRun(patches) {
+  if (!patches.length) return 0;
+  const run = patches.reduce((total, patch) => total + Math.max(2, patch.stools) + BAR_ELBOW, 0);
+  return run - BAR_ELBOW;
+}
 
 /**
- * Emblems a cart can wear. Which one a project gets is derived from its name, so a project
- * keeps its van — and its colours — for as long as the name does.
+ * How much COUNTER this set of patches needs. One tile longer than the stools it has to serve:
+ * the counter's top tile is the elbow where the L turns, and nobody sits at an elbow.
  */
-const EMBLEMS = ['taco', 'bowl', 'cup', 'burger', 'chili', 'fish', 'pretzel', 'star'];
-
-// `body` paints the van, `trim` the awning stripes and the lettering, `ink` the name board
-// behind it. The trim has to hold its own against the cream of the canopy, so none of these
-// is a near-white: a pale trim makes the stripes and the cart's name vanish.
-const SKINS = [
-  { body: '#d94f3d', trim: '#ffd166', ink: '#3a1512' },
-  { body: '#2f7f6f', trim: '#f9c74f', ink: '#0f2b26' },
-  { body: '#3d5a9e', trim: '#ffb347', ink: '#131f3d' },
-  { body: '#c9762b', trim: '#5ec8a6', ink: '#3a2109' },
-  { body: '#7d4a9e', trim: '#ffc2e2', ink: '#2a1338' },
-  { body: '#2b7dd6', trim: '#ff9f43', ink: '#0d2b4a' },
-  { body: '#4a8f3c', trim: '#ffe066', ink: '#16300f' },
-];
-
-/** The vans that are only ever scenery: shutters down, no queue, nobody home. */
-const SHUTTERED = [
-  { label: 'Nite Owl Coffee', emblem: 'cup' },
-  { label: 'Pretzel Wagon', emblem: 'pretzel' },
-  { label: 'Dumpling Bros', emblem: 'bowl' },
-  { label: 'Chili Sister', emblem: 'chili' },
-  { label: 'Fry Street', emblem: 'fish' },
-];
-
-// `hash` returns a full unsigned 32-bit value, so anything derived from it is shifted
-// unsigned and taken modulo — a signed shift here indexes off the front of the list.
-const pick = (list, n) => list[(n >>> 0) % list.length];
+export function barWidth(patches) {
+  return Math.max(BAR_MIN, barRun(patches) + 1);
+}
 
 /**
  * The plan for the whole district.
  *
  * @param {object} options
- * @param {{key: string, name: string, seats: number, skin: object}[]} options.houses
- *   the restaurants, in the order they stand along the street, left to right
- * @param {{key: string, label: string, count: number}[]} options.carts one per project outside
+ * @param {{key: string, name: string, seats: number, bar: {hubId: string, stools: number}[]}} options.house
+ *   the restaurant: how many tables it needs, and one patch of bar per orchestrator
  */
-export function buildDistrict({ houses = [], carts = [] } = {}) {
-  const specs = houses.map((house) => {
-    const party = Math.max(1, house.seats ?? 1);
-    const cols = Math.max(2, Math.ceil(Math.sqrt(party * 1.4)));
-    return { ...house, cols, rows: Math.max(1, Math.ceil(party / cols)) };
-  });
+export function buildDistrict({ house = {} } = {}) {
+  const party = Math.max(1, house.seats ?? 1);
+  const patches = house.bar ?? [];
 
-  // Both houses front the same pavement, so they are cut to the same depth — the taller party
-  // decides how many rows of tables there are and the other gets the same room with fewer.
-  const rows = Math.max(1, ...specs.map((spec) => spec.rows));
+  // The room is cut to whichever of its two halves is hungrier. The bar runs down the depth, so
+  // a busy bar makes the room DEEPER — and the dining room then gets NARROWER to match, laying
+  // the same tables out in more rows of fewer columns. Growing both ways at once is what turns
+  // a restaurant into an aircraft hangar with eight people in it.
+  const square = Math.max(2, Math.ceil(Math.sqrt(party * 1.4)));
+  const rowsForBar =
+    Math.ceil((barWidth(patches) + BAR_TO_ROPE - FIRST_TABLE_Y - 2) / TABLE_GAP) + 1;
+  const rows = Math.max(1, Math.ceil(party / square), rowsForBar);
+  const cols = Math.max(MIN_TABLE_COLS, Math.ceil(party / rows));
+
   const lobbyY = FIRST_TABLE_Y + (rows - 1) * TABLE_GAP + 2;
   // One row deeper than the rope line's lobby, so the doorway is not also somebody's place
   // in the queue.
   const rd = lobbyY + 5;
 
-  const plans = [];
-  let cursor = 0;
-  specs.forEach((spec) => {
-    const hw = spec.cols * TABLE_GAP + 3;
-    plans.push(planHouse(spec, cursor, hw, rows, lobbyY, rd));
-    cursor += hw + HOUSE_GAP;
-  });
-  const blockEnd = cursor - HOUSE_GAP;
+  const hw = FLOOR_X + cols * TABLE_GAP + 3;
+  const plan = planHouse({ ...house, cols, rows, bar: patches }, 0, hw, lobbyY, rd);
 
   const walkY = rd;
   const roadY = rd + WALK_ROWS;
-  const cartY = roadY + ROAD_ROWS;
-  const crowdY = cartY + CART_ROWS;
+  const kerbY = roadY + ROAD_ROWS;
+  const crowdY = kerbY + KERB_ROWS;
   const d = crowdY + CROWD_ROWS;
 
-  // The vans are spaced to fill whatever frontage the block turns out to have, rather than
-  // parked nose to tail at one end of an otherwise empty street.
-  // The street has to run wider than the buildings do. Each row of it toward the camera shifts
-  // half a tile left on screen, so a pavement that ends where the last frontage ends visibly
-  // falls short of it by exactly the depth of the street.
-  const cartSpecs = specCarts(carts);
-  const w = Math.max(blockEnd + (d - rd), CART_X0 + CART_MIN_PITCH * cartSpecs.length + 3);
-  const pitch = Math.max(CART_MIN_PITCH, Math.floor((w - CART_X0 - 4) / cartSpecs.length));
-  const stalls = placeCarts(cartSpecs, pitch, cartY, crowdY);
+  // The street has to run wider than the building does. Each row of it toward the camera shifts
+  // half a tile left on screen, so a pavement that ends where the frontage ends visibly falls
+  // short of it by exactly the depth of the street.
+  const w = hw + (d - rd);
 
   const street = {
     walkY,
     walkRows: WALK_ROWS,
     roadY,
     roadRows: ROAD_ROWS,
-    cartY,
+    kerbY,
+    kerbRows: KERB_ROWS,
     crowdY,
     crowdRows: CROWD_ROWS,
-    // A zebra in front of each door, which is what makes the walk in read as a walk in.
-    crossings: plans.map((plan) => ({ x0: plan.door.x - 1, x1: plan.door.x + 2 })),
+    // A zebra in front of the door, which is what makes the frontage read as an entrance.
+    crossings: [{ x0: plan.door.x - 1, x1: plan.door.x + 2 }],
   };
 
-  const props = planProps({ w, street, plans, stalls });
-  const { blocked, blockedStaff } = planBlocking({ w, d, plans, rd, street, stalls });
+  const props = planProps({ w, street, plan });
+  const { blocked, blockedStaff } = planBlocking({ w, d, plan, rd, street });
 
   return {
     w,
     d,
     houseDepth: rd,
-    houses: plans,
-    // The alleys between the rooms get a surface of their own, so a gap reads as a gap rather
-    // than as a hole punched through the block. With one restaurant there is no gap to floor.
-    alley: { from: plans[0]?.ox ?? 0, to: blockEnd },
+    house: plan,
     street,
-    carts: stalls,
     props,
     blocked,
     blockedStaff,
   };
 }
 
-/** One restaurant: its kitchen, its tables, its lobby, and the door it opens onto the street. */
-function planHouse(spec, ox, w, rows, lobbyY, rd) {
-  const chefX = ox + Math.max(2, Math.floor(w / 2) - 2);
-  const chef = { x: chefX, y: 2 };
-  const station = { x: chefX + 4, y: 1 };
+/**
+ * The restaurant: its bar, its kitchen, its tables, its lobby, and the door onto the street.
+ *
+ * The bar is one continuous run down the left wall, divided into patches, one per orchestrator:
+ * the bartender stands behind the middle of its own patch and the stools beside it are for the
+ * sessions that bartender is driving. Patches are laid back to front in election order, so the
+ * longest-standing orchestrator keeps its end of the bar as others start pouring.
+ */
+function planHouse(spec, ox, w, lobbyY, rd) {
+  // The kitchen is a corner, not a wall: three rows in the back right, ending at the gate the
+  // waiters come out through. Everything it gave up went to the bar.
+  const chefX = ox + Math.max(FLOOR_X + 1, w - 6);
+  const chef = { x: chefX, y: 1 };
+  const station = { x: ox + w - 2, y: 1 };
   const entranceX = ox + ENTRANCE_X;
 
-  // Tables row by row, kitchen side first, each row filled from the centre outward — so the
-  // first tables handed out are the good ones.
+  // The bar runs the full depth it is allowed, however few people are drinking at it: a room
+  // with three stools huddled in one corner reads as a serving hatch, not as a bar. Every tile
+  // of it gets a stool, and the patches are then centred along that run, so one bartender on
+  // its own stands in the middle rather than at one end.
+  const barLen = Math.max(BAR_MIN, lobbyY - BAR_TO_ROPE - BAR_ARM_Y);
+  const lastY = BAR_ARM_Y + barLen - 1;
+  const stools = [];
+  for (let y = STOOL_Y0; y <= lastY; y++) stools.push({ x: ox + STOOL_X, y });
+
+  const patches = [];
+  let cursor = Math.max(0, Math.floor((stools.length - barRun(spec.bar ?? [])) / 2));
+  for (const patch of spec.bar ?? []) {
+    const len = Math.max(2, patch.stools);
+    if (cursor + len > stools.length) break; // no bar left: this orchestrator waits for room
+    const seats = stools.slice(cursor, cursor + len);
+    patches.push({
+      hubId: patch.hubId,
+      len,
+      stools: seats,
+      tender: { x: ox + BAR_LANE_X, y: seats[Math.floor((len - 1) / 2)].y },
+    });
+    cursor += len + BAR_ELBOW;
+  }
+  const bar = {
+    x: ox + BAR_X,
+    lane: ox + BAR_LANE_X,
+    stoolX: ox + STOOL_X,
+    y0: BAR_ARM_Y,
+    laneY: BAR_LANE_Y,
+    len: barLen,
+    // The arm turns the corner and runs INTO the kitchen block, which is what joins them.
+    armTo: ox + FLOOR_X,
+    stools,
+    patches,
+  };
+
+  // Tables row by row, bar side first, each row filled from the centre outward — so the first
+  // tables handed out are the good ones.
   const slots = [];
-  for (let j = 0; j < rows; j++) {
+  for (let j = 0; j < spec.rows; j++) {
     const order = [];
     let left = Math.floor((spec.cols - 1) / 2);
     let right = left + 1;
     for (let i = 0; i < spec.cols; i++) order.push(i % 2 === 0 ? left-- : right++);
     for (const i of order) {
-      slots.push({ tx: ox + 2 + i * TABLE_GAP, ty: FIRST_TABLE_Y + j * TABLE_GAP });
+      slots.push({ tx: ox + FLOOR_X + 1 + i * TABLE_GAP, ty: FIRST_TABLE_Y + j * TABLE_GAP });
     }
   }
 
   return {
     key: spec.key,
     name: spec.name,
-    skin: spec.skin,
     ox,
     w,
     d: rd,
     slots,
+    bar,
     gate: ox + w - 2,
     chef,
-    pickup: { x: chefX, y: 3 },
+    pickup: { x: chefX, y: 2 },
     station,
     // Around the card table, on its far sides, so the table hides their laps like a diner's.
     waiterSeats: [
@@ -204,100 +259,68 @@ function planHouse(spec, ox, w, rows, lobbyY, rd) {
 }
 
 /**
- * One van per project on the street, then shuttered vans until the kerb looks like a kerb. A
- * project keeps its emblem and its paint because both come from a hash of its name.
+ * Street furniture. Nothing out here is an agent any more — the vans went when the last session
+ * came indoors — so the pavement has to hold the picture up on its own: a shelter, a kiosk, a
+ * phone box, trees, and a few cars parked along the kerb.
+ *
+ * The big pieces are placed at fractions of the frontage rather than at fixed pitches, so a
+ * narrow street gets the same three landmarks spread across it as a wide one does.
  */
-function specCarts(carts) {
-  const real = carts.slice(0, MAX_CARTS).map((cart) => {
-    const h = hash(cart.key || 'no-project');
-    return {
-      key: cart.key,
-      label: cart.label,
-      count: cart.count ?? 0,
-      emblem: pick(EMBLEMS, h),
-      skin: pick(SKINS, h >>> 5),
-      closed: false,
-    };
-  });
-  const stalls = [...real];
-  for (let i = 0; stalls.length < MIN_CARTS; i++) {
-    const filler = pick(SHUTTERED, i);
-    stalls.push({
-      key: `closed:${i}`,
-      label: filler.label,
-      count: 0,
-      emblem: filler.emblem,
-      skin: pick(SKINS, i * 3 + 2),
-      closed: true,
+function planProps({ w, street, plan }) {
+  const props = [];
+  const { walkY, roadY, roadRows, kerbY, crowdY, crowdRows } = street;
+  const backEdge = crowdY + crowdRows - 1;
+  const clearOfDoor = (x) => Math.abs(x - plan.door.x) > 2;
+  const at = (fraction) => Math.max(2, Math.min(w - 4, Math.round(w * fraction)));
+
+  // The far pavement, in front of the frontage, kept clear of the door.
+  for (let x = 4; x < w - 1; x += 8)
+    if (clearOfDoor(x)) props.push({ kind: 'lamp', x, y: walkY + 1 });
+  for (let x = 3; x < w - 2; x += 10)
+    if (clearOfDoor(x)) props.push({ kind: 'bin', x, y: walkY + 1 });
+  for (let x = 7; x < w - 3; x += 11)
+    if (clearOfDoor(x)) props.push({ kind: 'bench', x, y: walkY });
+  for (let x = 2; x < w - 2; x += 9) if (clearOfDoor(x)) props.push({ kind: 'tree', x, y: walkY });
+  props.push({ kind: 'hydrant', x: at(0.62), y: walkY + 1 });
+  props.push({ kind: 'trafficLight', x: Math.max(2, plan.door.x - 4), y: walkY + 1 });
+
+  // The near pavement: three landmarks, spread out, with the parked cars between them.
+  // Kept off the crossing, which is the one stretch of kerb that has to stay walkable.
+  const offCrossing = (x) => (clearOfDoor(x) ? x : x + 4 < w - 4 ? x + 4 : x - 4);
+  props.push({ kind: 'busStop', x: offCrossing(at(0.12)), y: kerbY });
+  props.push({ kind: 'newsstand', x: offCrossing(at(0.46)), y: kerbY });
+  props.push({ kind: 'phoneBox', x: offCrossing(at(0.8)), y: kerbY });
+  // Parked in the road hard against the kerb, which is where a parked car goes: the near row of
+  // the carriageway is the parking lane, and the traffic keeps to the two rows behind it.
+  for (const fraction of [0.36, 0.66, 0.9]) {
+    props.push({
+      kind: 'parked',
+      x: at(fraction),
+      y: roadY + roadRows - 1.15,
+      index: Math.round(fraction * 7),
     });
   }
-  return stalls;
-}
+  for (let x = 6; x < w - 2; x += 11) props.push({ kind: 'bin', x, y: kerbY + 1 });
+  for (let x = 9; x < w - 2; x += 12) props.push({ kind: 'bollard', x, y: crowdY });
 
-/** Park the vans along the kerb, evenly, and work out where their customers stand. */
-function placeCarts(stalls, pitch, cartY, crowdY) {
-  return stalls.map((cart, index) => {
-    const x = CART_X0 + index * pitch;
-    return {
-      ...cart,
-      index,
-      x,
-      y: cartY,
-      w: CART_W,
-      d: CART_ROWS,
-      // Three at the hatch eating, then two rows waiting their turn behind them — filled from
-      // the middle out, so one person on their own is standing at the van and not beside it.
-      eat: [0, 1, 2].map((i) => ({ x: x + i, y: crowdY })),
-      queue: [1, 2].flatMap((row) => [1, 0, 2, -1, 3].map((i) => ({ x: x + i, y: crowdY + row }))),
-    };
-  });
-}
-
-/** Street furniture: lamps, benches, bins, planters, and a few pigeons who live here. */
-function planProps({ w, street, plans, stalls }) {
-  const props = [];
-  const { walkY, crowdY, crowdRows } = street;
-  const nearWalk = street.cartY;
-  const backEdge = crowdY + crowdRows - 1;
-  const doors = plans.map((plan) => plan.door.x);
-  const clearOfDoors = (x) => doors.every((dx) => Math.abs(x - dx) > 2);
-
-  for (let x = 4; x < w - 1; x += 7)
-    if (clearOfDoors(x)) props.push({ kind: 'lamp', x, y: walkY + 1 });
+  // The back edge of the world, where the railing runs.
   for (let x = 1; x < w - 1; x += 9) props.push({ kind: 'lamp', x, y: backEdge });
+  for (let x = 6; x < w - 2; x += 13) props.push({ kind: 'bench', x, y: backEdge });
+  for (let x = 4; x < w - 2; x += 11) props.push({ kind: 'tree', x, y: backEdge });
 
-  // Between the vans there is room for the things a pavement collects.
-  for (const cart of stalls) {
-    props.push({ kind: 'board', x: cart.x + cart.w, y: nearWalk });
-    props.push({ kind: 'bin', x: cart.x - 1, y: nearWalk + 1 });
-  }
-  // The far pavement, in front of the two frontages, kept clear of both doors.
-  for (let x = 3; x < w - 2; x += 7)
-    if (clearOfDoors(x)) props.push({ kind: 'bin', x, y: walkY + 1 });
-  for (let x = 6; x < w - 3; x += 11)
-    if (clearOfDoors(x)) props.push({ kind: 'bench', x, y: walkY });
-  for (let x = 2; x < w - 2; x += 5)
-    if (clearOfDoors(x)) props.push({ kind: 'planter', x, y: walkY });
-  props.push({ kind: 'hydrant', x: Math.max(1, Math.floor(w / 2)), y: walkY + 1 });
-  for (let x = 6; x < w - 2; x += 11) props.push({ kind: 'bench', x, y: backEdge });
-  for (let x = 4; x < w - 2; x += 9) props.push({ kind: 'planter', x, y: backEdge });
-  props.push({
-    kind: 'drain',
-    x: Math.max(2, Math.floor(w / 3)),
-    y: street.roadY + street.roadRows - 1,
-  });
+  props.push({ kind: 'drain', x: at(0.33), y: roadY + roadRows - 1 });
   props.push({ kind: 'pigeon', x: 9.4, y: backEdge + 0.3 });
   props.push({ kind: 'pigeon', x: 10.1, y: backEdge + 0.7 });
-  props.push({ kind: 'pigeon', x: Math.floor(w / 2) - 2.6, y: crowdY + 2.4 });
+  props.push({ kind: 'pigeon', x: at(0.5) - 2.6, y: crowdY + 2.4 });
   return props;
 }
 
 /**
- * Two maps of what cannot be walked through. Guests may not enter a kitchen and may only cross
- * the road on a crossing; staff may use their own kitchen but not the stove, the chef, the card
- * table or the counter, and never leave the building at all.
+ * Two maps of what cannot be walked through. Guests may not enter the kitchen, may not get
+ * behind the bar and may not leave the building; staff may use the kitchen and the back of the
+ * bar but not the stove, the chef, the card table or the pass, and never go outdoors.
  */
-function planBlocking({ w, d, plans, rd, street, stalls }) {
+function planBlocking({ w, d, plan, rd, street }) {
   const blocked = new Set();
   const blockedStaff = new Set();
   const block = (x, y, staffToo = true) => {
@@ -305,33 +328,51 @@ function planBlocking({ w, d, plans, rd, street, stalls }) {
     if (staffToo) blockedStaff.add(`${x},${y}`);
   };
 
-  // Everything on the houses' rows is a building until a house says otherwise.
+  // Everything on the building's rows is a wall until the room says otherwise.
   for (let x = 0; x < w; x++) for (let y = 0; y < rd; y++) block(x, y);
 
-  for (const plan of plans) {
-    const { ox, w: hw, lobbyY, chef, station, podium, host, gate, entrance, slots } = plan;
-    for (let x = ox; x < ox + hw; x++) {
-      for (let y = 0; y < rd; y++) {
-        blocked.delete(`${x},${y}`);
-        blockedStaff.delete(`${x},${y}`);
-      }
+  const { ox, w: hw, lobbyY, chef, station, podium, host, gate, entrance, slots, bar } = plan;
+  for (let x = ox; x < ox + hw; x++) {
+    for (let y = 0; y < rd; y++) {
+      blocked.delete(`${x},${y}`);
+      blockedStaff.delete(`${x},${y}`);
     }
-    for (const s of slots) {
-      block(s.tx, s.ty);
-      block(s.tx, s.ty - 1);
-    }
-    for (let x = ox; x < ox + hw; x++) {
-      for (let y = 0; y < COUNTER_Y; y++) block(x, y, false);
-      if (x !== gate) block(x, COUNTER_Y);
-      if (x !== entrance.x) block(x, lobbyY);
-    }
-    block(chef.x - 1, chef.y);
-    block(chef.x, chef.y);
-    block(station.x, station.y);
-    block(podium.x, podium.y);
-    block(host.x, host.y);
   }
-  // The road is for traffic. The crossings are not.
+
+  // The kitchen and the pass, in the back-right corner only. The kitchen is staff country: a
+  // waiter walks it, a guest does not. The pass is solid to everybody but the gate.
+  for (let x = ox + FLOOR_X; x < ox + hw; x++) {
+    for (let y = 0; y < KITCHEN_ROWS; y++) block(x, y, false);
+    if (x !== gate) block(x, COUNTER_Y);
+  }
+  block(chef.x - 1, chef.y);
+  block(chef.x, chef.y);
+  block(station.x, station.y);
+
+  // The bar, an L down the left wall and along the back. Behind it is the bartenders' own lane
+  // and nobody else's — a guest may not get behind a bar, but the kitchen staff share it, which
+  // is the corridor that joins the two halves of the room. The counter and the stools are
+  // furniture to everyone.
+  for (let y = bar.laneY; y < bar.y0 + bar.len; y++) {
+    block(bar.lane, y, false);
+    if (y >= bar.y0) block(bar.x, y);
+  }
+  for (let x = bar.lane; x <= bar.armTo; x++) {
+    block(x, bar.laneY, false);
+    if (x >= bar.x) block(x, bar.y0);
+  }
+  for (const stool of bar.stools) block(stool.x, stool.y);
+
+  // The rope line across the room, with a gap at the entrance.
+  for (let x = ox; x < ox + hw; x++) if (x !== entrance.x) block(x, lobbyY);
+  for (const s of slots) {
+    block(s.tx, s.ty);
+    block(s.tx, s.ty - 1);
+  }
+  block(podium.x, podium.y);
+  block(host.x, host.y);
+
+  // The road is for traffic. The crossing is not.
   const onCrossing = (x) => street.crossings.some((c) => x >= c.x0 && x <= c.x1);
   for (let x = 0; x < w; x++) {
     for (let y = street.roadY; y < street.roadY + street.roadRows; y++) {
@@ -339,11 +380,6 @@ function planBlocking({ w, d, plans, rd, street, stalls }) {
       else blockedStaff.add(`${x},${y}`);
     }
   }
-  for (const cart of stalls) {
-    for (let x = cart.x; x < cart.x + cart.w; x++)
-      for (let y = cart.y; y < cart.y + cart.d; y++) block(x, y);
-  }
-
   // Waiters stay indoors: the whole outdoors is a wall to them.
   for (let x = 0; x < w; x++) for (let y = rd; y < d; y++) blockedStaff.add(`${x},${y}`);
 

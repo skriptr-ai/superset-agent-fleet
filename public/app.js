@@ -1,5 +1,6 @@
-// Wiring: the SSE stream into the scene, and the side panel — a card per agent that opens
-// into the conversation between the orchestrator and that agent.
+// Wiring: the SSE stream into the scene, and the side panel — a card per agent that opens into
+// its conversation, with whichever bartender is driving it or, for a session nobody is
+// orchestrating, with you.
 
 import { Scene, isBriefing } from './scene.js';
 import { STATUS, FLAVOR, issueOf, plainActivity } from './draw.js';
@@ -35,10 +36,7 @@ const flavorChip = (flavor) => {
 
 let allAgents = [];
 let agents = [];
-/**
- * The orchestrators the server elected, most-driving first. It sends a set now; the scene
- * still names two houses, so anything past the second has nowhere to sit — see Scene#electHubs.
- */
+/** The orchestrators the server elected, most-driving first. Each gets a patch of the bar. */
 let hubIds = [];
 /** Project filter: '' shows every session; a project name shows only its workspaces. */
 let projectFilter = '';
@@ -91,17 +89,21 @@ const clock = (at) =>
     : 'earlier';
 
 /**
- * The two restaurants, as the scene has worked them out: which session is chef where, and who
- * is sitting in each. The panel asks the scene rather than recomputing it, so the list and the
- * block can never disagree about who is whose worker.
+ * The room, as the scene has worked it out: who is pouring behind each patch of the bar, who is
+ * on the stools in front of it, and who is out at the tables. The panel asks the scene rather
+ * than recomputing it, so the list and the room can never disagree about who is whose worker.
  */
-let houses = [];
-const houseOfAgent = (id) => houses.find((h) => h.hubId === id || h.members.includes(id)) ?? null;
-const chefOf = (id) => houseOfAgent(id)?.hubId ?? null;
-const isChef = (id) => houses.some((h) => h.hubId && h.hubId === id);
+let room = { bar: [], tables: [], queue: [] };
+const patchOf = (id) => room.bar.find((p) => p.hubId === id || p.members.includes(id)) ?? null;
+/** The bartender driving this session, or null when the session is one of yours. */
+const bartenderOf = (id) => {
+  const patch = patchOf(id);
+  return patch && patch.hubId !== id ? patch.hubId : null;
+};
+const isBartender = (id) => room.bar.some((p) => p.hubId === id);
 
-/** What this session's own chef has exchanged with it, or null if nobody is driving it. */
-const connFor = (id) => (isChef(id) ? null : scene.connOf(id));
+/** What this session's own bartender has exchanged with it, or null if nobody is driving it. */
+const connFor = (id) => (isBartender(id) ? null : scene.connOf(id));
 
 function applyFilter() {
   agents = projectFilter
@@ -146,22 +148,28 @@ function setFilter(value) {
   applyFilter();
   scene.select(null);
   scene.setWorld(agents, hubIds, links);
-  houses = scene.houseState();
+  room = scene.roomState();
   scene.fit();
   renderHeader({ tick: lastTick, error: null });
   renderPanel();
 }
 
 function threadFor(id) {
-  const chef = chefOf(id);
-  const isHub = isChef(id);
+  const tender = bartenderOf(id);
+  const isHub = isBartender(id);
   const rows = [...events.values()]
     .filter((e) => {
       if (isHub)
         return e.fromId === id && (e.kind === 'send' || e.kind === 'inbox' || isBriefing(e));
       const own = e.toId === id && (e.kind === 'waiting' || e.kind === 'spawn');
-      if (!chef) return own;
-      const between = (e.fromId === chef && e.toId === id) || (e.fromId === id && e.toId === chef);
+      // Nobody driving it means the other party is YOU, and a message from you is an event
+      // with no sender at all — an unattributed queue entry, or a turn that simply started.
+      if (!tender) {
+        const yours = (e.toId === id && !e.fromId) || (e.fromId === id && !e.toId);
+        return yours || own;
+      }
+      const between =
+        (e.fromId === tender && e.toId === id) || (e.fromId === id && e.toId === tender);
       return between || own;
     })
     .filter((e) => e.kind !== 'dispatch')
@@ -223,31 +231,34 @@ const heading = (agent) => {
 };
 
 function lastExchange(id) {
-  const thread = threadFor(id).filter((e) => e.text);
+  // An unattributed spawn's text is the workspace's NAME, not something anybody said — quoting
+  // it back as the last thing you told this session would be a small lie on every card.
+  const thread = threadFor(id).filter((e) => e.text && (e.kind !== 'spawn' || isBriefing(e)));
   const last = thread[thread.length - 1];
   if (!last) return '';
-  const mine = isChef(id);
-  const inbound = !mine && last.fromId === chefOf(id);
-  const other = mine ? nameOf(last.toId) : null;
-  const who = mine
+  const pouring = isBartender(id);
+  const inbound = !pouring && last.fromId !== id;
+  const other = pouring ? nameOf(last.toId) : null;
+  const who = pouring
     ? `to ${escape(short(issueOf(other).key ?? other, 22))}`
     : inbound
-      ? 'chef said'
+      ? bartenderOf(id)
+        ? 'bartender said'
+        : 'you said'
       : 'said';
   return `<p class="last ${inbound ? 'in' : 'out'}">${escape(short(last.text, 120))}<time>${who} · ${ago(last.at)}</time></p>`;
 }
 
 function card(agent) {
   const conn = connFor(agent.id);
-  const isHub = isChef(agent.id);
-  const house = houseOfAgent(agent.id);
+  const isHub = isBartender(agent.id);
   const count = conn ? conn.sends + conn.replies : 0;
-  const drives = isHub ? (house?.members.length ?? 0) : 0;
+  const drives = isHub ? (patchOf(agent.id)?.members.length ?? 0) : 0;
   return `
     <article class="card ${isHub ? 'hub' : ''} ${agent.id === scene.selectedId ? 'on' : ''}"
              data-id="${agent.id}" style="--c:${(STATUS[agent.status] ?? STATUS.idle).color}">
       <header>
-        ${isHub ? `<span class="tag">${escape(house?.name ?? 'Orchestrator')}</span>` : ''}
+        ${isHub ? '<span class="tag">Bartender</span>' : ''}
         <h4>${heading(agent)}</h4>
         ${count ? `<span class="count" title="messages exchanged">✉ ${count}</span>` : ''}
       </header>
@@ -257,7 +268,7 @@ function card(agent) {
         ${agent.model ? `<span class="chip">${escape(agent.model)}</span>` : ''}
         ${hostChip(agent)}
       </div>
-      ${isHub && drives ? `<p class="last">driving ${drives} session${drives === 1 ? '' : 's'} inside</p>` : lastExchange(agent.id)}
+      ${isHub && drives ? `<p class="last">pouring for ${drives} session${drives === 1 ? '' : 's'} at the bar</p>` : lastExchange(agent.id)}
     </article>`;
 }
 
@@ -270,29 +281,33 @@ function renderList() {
 
   const claimed = new Set();
   const blocks = [];
-  for (const house of houses) {
-    const chef = known.get(house.hubId);
-    if (chef) claimed.add(chef.id);
-    const inside = house.members
+  for (const patch of room.bar) {
+    const tender = known.get(patch.hubId);
+    if (tender) claimed.add(tender.id);
+    const stools = patch.members
       .map((id) => known.get(id))
       .filter(Boolean)
       .sort((a, b) => (connFor(b.id)?.lastAt ?? 0) - (connFor(a.id)?.lastAt ?? 0));
-    for (const agent of inside) claimed.add(agent.id);
-    if (!chef && !inside.length) continue;
+    for (const agent of stools) claimed.add(agent.id);
+    if (!tender && !stools.length) continue;
+    const tenderName = tender
+      ? (issueOf(tender.name, tender.branch).key ?? short(tender.name, 24))
+      : 'nobody yet';
     blocks.push(
-      `<h3>${escape(house.name)} <small>${inside.length}</small></h3>` +
-        (chef ? card(chef) : '') +
-        inside.map(card).join(''),
+      `<h3>At the bar <small>${stools.length}</small></h3>` +
+        `<p class="hint">Orchestrated by ${escape(tenderName)} — messages go straight over the bar.</p>` +
+        (tender ? card(tender) : '') +
+        stools.map(card).join(''),
     );
   }
 
-  const street = agents
+  const mine = agents
     .filter((a) => !claimed.has(a.id))
     .sort((a, b) => a.name.localeCompare(b.name));
 
   els.panel.innerHTML = `
-    ${blocks.length ? blocks.join('') : '<p class="hint">No orchestrator detected yet — one is elected as soon as a session is seen driving two others. Until then the restaurant is shut and everybody is out on the street.</p>'}
-    ${section('Out on the street', street, 'Running on their own, eating from the carts.')}`;
+    ${blocks.length ? blocks.join('') : '<h3>At the bar <small>0</small></h3><p class="hint">Nobody is orchestrating yet — a bartender is elected as soon as a session is seen driving two others. Until then the bar stands empty and the whole fleet is out on the floor.</p>'}
+    ${section('At the tables', mine, 'Nobody is orchestrating these — they are yours, and a waiter carries out what you send them.')}`;
 
   for (const node of els.panel.querySelectorAll('.card')) {
     node.addEventListener('click', () => scene.select(node.dataset.id));
@@ -300,14 +315,18 @@ function renderList() {
 }
 
 function bubbleRow(e, agent) {
-  const fromHub = e.fromId === chefOf(agent.id) && !isChef(agent.id);
-  const who = fromHub ? 'Chef' : (issueOf(agent.name, agent.branch).key ?? short(agent.name, 28));
+  const mine = !isBartender(agent.id) && e.fromId !== agent.id;
+  const who = mine
+    ? bartenderOf(agent.id)
+      ? 'Bartender'
+      : 'You'
+    : (issueOf(agent.name, agent.branch).key ?? short(agent.name, 28));
   const to =
-    e.toId && isChef(agent.id)
+    e.toId && isBartender(agent.id)
       ? ` → ${issueOf(nameOf(e.toId)).key ?? short(nameOf(e.toId), 26)}`
       : '';
   return `
-    <div class="msg ${fromHub ? 'from-hub' : 'from-agent'} k-${e.kind}">
+    <div class="msg ${mine ? 'from-hub' : 'from-agent'} k-${e.kind}">
       <div class="who">${escape(who)}${escape(to)}<time>${clock(e.at)}</time></div>
       <div class="body">${escape(e.text)}</div>
     </div>`;
@@ -345,7 +364,7 @@ function renderThread(agent) {
   flushReads();
   return html.length
     ? html.join('')
-    : `<p class="hint">Nothing exchanged with the orchestrator yet. What the agent last said:</p>
+    : `<p class="hint">Nothing exchanged yet. What the agent last said:</p>
        <div class="msg from-agent"><div class="body">${escape(agent.says || '—')}</div></div>`;
 }
 
@@ -362,7 +381,7 @@ function renderAgent(id) {
   els.panel.innerHTML = `
     <button class="back" type="button">← all agents</button>
     <div class="agent-head" style="--c:${(STATUS[agent.status] ?? STATUS.idle).color}">
-      ${isChef(id) ? `<span class="tag">${escape(houseOfAgent(id)?.name ?? 'Orchestrator')}</span>` : ''}
+      ${isBartender(id) ? '<span class="tag">Bartender</span>' : ''}
       <h2>${heading(agent)}</h2>
       <div class="meta">
         ${statusPill(agent)}
@@ -443,8 +462,7 @@ window.addEventListener('keydown', (e) => {
     else openDrawer(false);
   }
   if (e.key === 'f' || e.key === 'F') scene.fit();
-  // One digit per restaurant, in the order the orchestrators were elected; past the last one
-  // the digit frames the street. On a two-kitchen block that is still 1, 2, street.
+  // 1 the whole room, 2 the bar, 3 the tables, anything past that the street.
   if (e.key >= '1' && e.key <= '9') scene.fitZone(Number(e.key) - 1);
   if (e.key === 's' || e.key === 'S') openDrawer(!drawerOpen());
   if (e.key === 'r' || e.key === 'R') {
@@ -471,7 +489,7 @@ function connect() {
       for (const key of [...events.keys()].slice(0, events.size - 3000)) events.delete(key);
     }
     scene.setWorld(agents, hubIds, links);
-    houses = scene.houseState();
+    room = scene.roomState();
     // The stream replays its backlog on connect so threads have history; animating all of
     // it would fire a minute of traffic at once, so only live ticks reach the scene.
     if (!firstSnapshot) scene.addEvents((snapshot.events ?? []).filter((e) => !e.replay));

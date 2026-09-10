@@ -63,6 +63,10 @@ export const C = {
   counter: '#5d6b7a',
   counterTop: '#b8c4cf',
   counterEdge: '#3f4a56',
+  barTop: '#8a5730',
+  barFront: '#4a2c18',
+  barSide: '#3a2112',
+  barLip: '#c08a52',
   cloth: '#d9413b',
   clothWhite: '#fbf3ea',
   plate: '#f5f5f0',
@@ -261,6 +265,47 @@ export function walls(ctx, ox, w, d, height) {
   ctx.fill();
 }
 
+/**
+ * A window in a wall, with the night outside it: a sash frame, four panes, a sill, and a few lit
+ * windows in the block across the street that come and go on their own clock.
+ *
+ * `side` is -1 for the left wall (placed by row `y`) and 1 for the back wall (placed by column
+ * `x`), the same convention the pictures and the lamps use.
+ */
+export function wallWindow(ctx, ox, x, y, side, z, t) {
+  const p = side < 0 ? iso(ox, y) : iso(x, 0);
+  const w = 26;
+  const h = 26;
+  const dx = side < 0 ? -1 : 1;
+  // A quad on the wall: `u` runs along it in pixels, `v` straight up.
+  const quad = (u0, u1, v0, v1, fill) => {
+    ctx.fillStyle = fill;
+    ctx.beginPath();
+    ctx.moveTo(p.x + dx * u0, p.y - z + u0 / 2 - v0);
+    ctx.lineTo(p.x + dx * u1, p.y - z + u1 / 2 - v0);
+    ctx.lineTo(p.x + dx * u1, p.y - z + u1 / 2 - v1);
+    ctx.lineTo(p.x + dx * u0, p.y - z + u0 / 2 - v1);
+    ctx.closePath();
+    ctx.fill();
+  };
+
+  quad(0, w, -3, h + 3, '#6b563a'); // the frame
+  quad(2, w - 2, -1, h + 1, '#12161d'); // the night behind it
+  // Whatever is across the street, blinking on and off a window at a time.
+  for (let i = 0; i < 7; i++) {
+    const u = 4 + (i % 4) * 5;
+    const v = 4 + Math.floor(i / 4) * 8;
+    const on = Math.sin(t / 2600 + i * 2.3 + x + y) > -0.2;
+    quad(u, u + 3, v, v + 4, on ? 'rgba(255,224,150,0.75)' : 'rgba(90,105,130,0.35)');
+  }
+  // A wash of sky at the top, the glazing bars, and a sill under the lot.
+  quad(2, w - 2, h - 7, h + 1, 'rgba(72,92,140,0.55)');
+  quad(w / 2 - 1, w / 2 + 1, -1, h + 1, '#6b563a');
+  quad(2, w - 2, h / 2 - 1, h / 2 + 1, '#6b563a');
+  quad(2, w - 2, -1, 0.5, 'rgba(255,255,255,0.12)');
+  quad(-2, w + 2, -6, -3, '#8a6d4a');
+}
+
 export function wallPicture(ctx, ox, x, y, side, z, t) {
   // A framed picture hung on the left (side=-1, along the x=ox wall) or right wall.
   const p = side < 0 ? iso(ox, y) : iso(x, 0);
@@ -433,6 +478,129 @@ export function plant(ctx, x, y) {
     ctx.ellipse(p.x + dx, p.y + dy, 5, 3, 0.3, 0, Math.PI * 2);
     ctx.fill();
   }
+}
+
+// ── the bar ──────────────────────────────────────────────────────────────────────────────────
+
+/** How tall the counter stands, and how far the boards behind it lift whoever is pouring. */
+export const BAR_H = 19;
+export const DUCKBOARD_H = 6;
+
+/**
+ * One tile of the bar counter. The bar runs down the left wall, so the stools are on its +x
+ * side: that is the face the brass foot rail goes on, and the edge the drinks sit along. Drawn
+ * a tile at a time so it painter-sorts with everyone standing at it, the way the pass does.
+ */
+export function barCounter(ctx, x, y) {
+  isoBox(ctx, x, y, 1, 1, BAR_H, C.barTop, C.barFront, C.barSide);
+  // The rail, on the stool side, where a foot would go.
+  const a = iso(x + 1, y);
+  const b = iso(x + 1, y + 1);
+  ctx.strokeStyle = '#c9a227';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(a.x, a.y - 7);
+  ctx.lineTo(b.x, b.y - 7);
+  ctx.stroke();
+  // A bright lip along the top of that same face, so the run reads as one continuous surface.
+  ctx.strokeStyle = C.barLip;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(a.x, a.y - BAR_H);
+  ctx.lineTo(b.x, b.y - BAR_H);
+  ctx.stroke();
+}
+
+/**
+ * The raised boards a bartender works on. Real bars have them, and this one earns its keep
+ * twice: without it the counter hides everything above the bartender's collar.
+ */
+export function duckboard(ctx, x, y) {
+  isoBox(ctx, x, y, 1, 1, DUCKBOARD_H, '#6a4128', '#4a2c18', '#3a2112');
+  for (let i = 1; i < 4; i++) {
+    const a = iso(x, y + i / 4, DUCKBOARD_H);
+    const b = iso(x + 1, y + i / 4, DUCKBOARD_H);
+    ctx.strokeStyle = '#57351f';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+  }
+}
+
+/** A shelf of bottles on the left wall, behind whoever is pouring: the back bar. */
+export function bottleShelf(ctx, ox, y, z, seed) {
+  const p = iso(ox, y);
+  ctx.fillStyle = C.woodDark;
+  ctx.beginPath();
+  ctx.moveTo(p.x, p.y - z);
+  ctx.lineTo(p.x - 28, p.y - z + 14);
+  ctx.lineTo(p.x - 28, p.y - z + 11);
+  ctx.lineTo(p.x, p.y - z - 3);
+  ctx.closePath();
+  ctx.fill();
+  const colors = ['#8a5a2b', '#3f7d52', '#7a2f3a', '#c9a227', '#2f4f6b', '#6b3a8a'];
+  for (let i = 0; i < 5; i++) {
+    const c = colors[(seed + i * 2) % colors.length];
+    const bx = p.x - 4 - i * 5;
+    const by = p.y - z + (4 + i * 5) / 2 - 3;
+    px(ctx, bx, by - 11, c, 2, 9);
+    px(ctx, bx, by - 13, c, 2, 2);
+    px(ctx, bx, by - 6, 'rgba(255,255,255,0.35)', 1, 3);
+  }
+}
+
+/** The beer taps, standing on the bar at the bartender's own stretch of it. */
+export function barTaps(ctx, x, y) {
+  const p = iso(x + 0.5, y + 0.5, BAR_H);
+  px(ctx, p.x - 5, p.y - 2, '#5f6a76', 11, 3);
+  for (let i = 0; i < 3; i++) {
+    px(ctx, p.x - 4 + i * 4, p.y - 10, '#b9c1cc', 2, 9);
+    px(ctx, p.x - 5 + i * 4, p.y - 12, i % 2 ? '#d9413b' : '#2f6b3e', 4, 3);
+  }
+}
+
+/** A bar stool: a padded seat on a post, with a ring for a foot. Drawn before whoever sits. */
+export function stool(ctx, x, y) {
+  const p = iso(x + 0.5, y + 0.5);
+  px(ctx, p.x - 1, p.y - 13, '#5f6a76', 2, 13);
+  ctx.strokeStyle = '#8a939f';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.ellipse(p.x, p.y - 5, 5, 2.4, 0, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.fillStyle = '#6b2530';
+  ctx.beginPath();
+  ctx.ellipse(p.x, p.y - 14, 7, 3.4, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#8c3340';
+  ctx.beginPath();
+  ctx.ellipse(p.x, p.y - 15, 6, 2.8, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = 'rgba(0,0,0,0.2)';
+  ctx.beginPath();
+  ctx.ellipse(p.x, p.y + 1, 6, 3, 0, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+/**
+ * A glass, at a point already in buffer coordinates. `kind` is what the bartender is moving:
+ * a poured drink on the way out, an empty glass with a note under it on the way back.
+ */
+export function drink(ctx, hx, hy, kind = 'send') {
+  if (kind === 'report') {
+    px(ctx, hx - 3, hy - 4, C.white, 7, 5);
+    px(ctx, hx - 2, hy - 3, '#5ee08a', 5, 1);
+    px(ctx, hx - 2, hy - 1, '#5ee08a', 3, 1);
+    px(ctx, hx - 2, hy - 10, '#cfd6de', 4, 6);
+    px(ctx, hx - 3, hy - 11, '#e6ebf1', 6, 1);
+    return;
+  }
+  px(ctx, hx - 2, hy - 10, '#cfd6de', 5, 10);
+  px(ctx, hx - 2, hy - 7, '#e0a03a', 5, 7);
+  px(ctx, hx - 2, hy - 11, '#fbf3ea', 5, 2);
+  px(ctx, hx - 2, hy - 5, 'rgba(255,255,255,0.45)', 1, 5);
 }
 
 export function serviceBell(ctx, x, y, z) {
@@ -740,9 +908,21 @@ export function dinerPalette(id) {
   return palette(lookFor(id));
 }
 
-export function chefPalette(id) {
+/**
+ * The chef is the developer — you — and not a session, so its look is fixed rather than
+ * derived from a workspace id. Whites, and the same face every time you look at the kitchen.
+ */
+export function chefPalette() {
+  return palette(
+    { body: C.white, trim: C.grey, hair: '#3a2a1e', skin: '#f0c9a4', pants: '#2f3a4a' },
+    { b: C.white, t: C.grey },
+  );
+}
+
+/** A bartender: waistcoat over a white shirt, so it reads apart from both chef and diner. */
+export function bartenderPalette(id) {
   const look = lookFor(id);
-  return palette(look, { b: C.white, t: C.grey, p: '#2f3a4a' });
+  return palette(look, { b: '#23283a', t: '#3a4258', p: '#1b1f2b' });
 }
 
 export function waiterPalette(index) {
