@@ -148,9 +148,58 @@ digit past the last one frames the street · `R` hides check-ins.
 
 ## How it knows
 
-Who exists comes from the `superset` CLI — `workspaces list`, `terminals list`, `terminals
-read` — polled every 2.5 s while a page is open. Traffic is harder: the CLI has no message
-history, only terminal buffers, so who said what to whom has to be **reconstructed**.
+Who exists comes from four questions — `hosts list`, then `workspaces list`, `terminals list`
+and `terminals read` per host — polled every 2.5 s while a page is open. Traffic is harder:
+there is no message history anywhere, only terminal buffers, so who said what to whom has to be
+**reconstructed**.
+
+### Two transports, one set of answers
+
+`superset` is not a script. It is a 75 MB compiled Bun binary, so each invocation loads that
+image and boots a JavaScript runtime — ~480 ms and ~130 MB resident — to do work that takes one
+millisecond. A poll reading twenty-five terminals paid that toll forty-six times.
+
+Underneath, the CLI is a thin client for a tRPC server the host service already runs on
+loopback, addressed and tokened in `~/.superset/host/<org>/manifest.json`. Asking it directly:
+
+|                            | time   | processes | memory  |
+| -------------------------- | ------ | --------- | ------- |
+| `superset workspaces list` | 483 ms | 1         | ~130 MB |
+| `workspace.list` over tRPC | 1 ms   | 0         | none    |
+
+So `lib/transport.js` uses the fast path where it reaches and the CLI everywhere else. This is
+**not** a second source of truth: it is the same server the CLI asks, answering the same
+procedures with the same rows — parity was checked field by field and differs only in `tags`,
+which arrives as an array rather than a string and is unused. What it costs is a stable
+contract: `/trpc/*` is private and may change in any Superset release, which is exactly why the
+CLI path stays and is probed rather than assumed.
+
+The host service knows only its **own** machine — no host, relay or remote procedures exist on
+it — so every remote host still goes through the CLI, and that is now essentially the whole
+cost of a poll. `superset status` reports the transport in use, as does `/api/health`.
+
+### Every machine, not just this one
+
+Each of those workspace commands defaults to **the machine it runs on**. `workspaces list`
+with no `--host` means `--local`, and `terminals list` / `terminals read` answer `Workspace not
+found on host <local>` for anything else. Taking those defaults does not show a fleet slightly
+short — it shows only the box the server happens to be on, and a workspace running on a VM is
+absent rather than empty.
+
+So the sweep starts at `hosts list` and runs once per host that is not explicitly offline,
+carrying `--host` through every call that follows. Workspaces are identified by their uuid, so
+a fleet is one world however many machines it is spread over, and an agent that is not on this
+machine wears its host's name as a badge — two hosts routinely hold a `main` of the same
+project, and the name alone stops identifying anything the moment a second machine joins.
+
+A host that is switched off is skipped and is **not** an error: half a fleet asleep is the
+normal state of a laptop, and flagging it would leave the live dot red for as long as it stayed
+shut. A host that reports itself online and then fails to answer _is_ flagged — that is the one
+that silently costs you rooms — and the rest of the fleet is still drawn. Only when no host at
+all answers does the world go dark.
+
+One consequence, spelt out under **Limits** below: the transcript source reads files on this
+machine, so it is offered only this machine's workspaces.
 
 The rule the whole thing is built on:
 
@@ -335,15 +384,16 @@ served fresh on every request.
 All optional, as environment variables (put them in the plist's `EnvironmentVariables` for the
 service):
 
-| Variable                   | Default                         | Meaning                                                               |
-| -------------------------- | ------------------------------- | --------------------------------------------------------------------- |
-| `AGENT_FLEET_PORT`         | `4400`                          | Port. One fleet per machine, so one server per machine                |
-| `AGENT_FLEET_POLL_MS`      | `2500`                          | Poll interval while a page is open                                    |
-| `AGENT_FLEET_IDLE_POLL_MS` | `20000`                         | Poll interval with nobody watching                                    |
-| `AGENT_FLEET_STATE`        | `~/.superset/agent-fleet.json`  | Where who-drives-whom is remembered; `''` to forget                   |
-| `AGENT_FLEET_LOG`          | `~/.superset/agent-fleet.jsonl` | What `bin/superset-send` recorded; `''` to ignore                     |
-| `AGENT_FLEET_TRANSCRIPTS`  | `~/.claude/projects`            | Claude Code's sessions, where MCP calls are read from; `''` to ignore |
-| `SUPERSET_CLI`             | `superset`                      | The CLI binary, if it is not on `PATH`                                |
+| Variable                       | Default                         | Meaning                                                               |
+| ------------------------------ | ------------------------------- | --------------------------------------------------------------------- |
+| `AGENT_FLEET_PORT`             | `4400`                          | Port. One fleet per machine, so one server per machine                |
+| `AGENT_FLEET_POLL_MS`          | `2500`                          | Poll interval while a page is open                                    |
+| `AGENT_FLEET_IDLE_POLL_MS`     | `20000`                         | Poll interval with nobody watching                                    |
+| `AGENT_FLEET_STATE`            | `~/.superset/agent-fleet.json`  | Where who-drives-whom is remembered; `''` to forget                   |
+| `AGENT_FLEET_LOG`              | `~/.superset/agent-fleet.jsonl` | What `bin/superset-send` recorded; `''` to ignore                     |
+| `AGENT_FLEET_TRANSCRIPTS`      | `~/.claude/projects`            | Claude Code's sessions, where MCP calls are read from; `''` to ignore |
+| `AGENT_FLEET_READ_CONCURRENCY` | `10`                            | `superset` processes in flight per poll; each is ~130 MB              |
+| `SUPERSET_CLI`                 | `superset`                      | The CLI binary, if it is not on `PATH`                                |
 
 ## Troubleshooting
 
@@ -372,7 +422,8 @@ send` and the election happens.
 ```
 server.js                     Bun HTTP server: poll loop, SSE stream, static files
 bin/superset-send             `terminals send` that also records what it sent
-lib/superset.js               the CLI wrapper
+lib/transport.js              how a question travels: the host service's tRPC, or the CLI
+lib/superset.js               the questions themselves, and the per-host sweep that finds the fleet
 lib/fleetlog.js               reads what bin/superset-send recorded
 lib/transcripts.js            reads a Claude session's own record of the MCP calls it made
 lib/parse.js                  terminal screen -> status, model, last utterance, CLI calls
@@ -407,6 +458,46 @@ to none of the first four.
   `bin/superset-send`, or the MCP tools, and none of it applies.
 - An orchestrator that builds its commands from variables is invisible to the screen reader
   entirely, whatever its harness. Same answer: `bin/superset-send`, or the MCP tools.
+- **Idle agents on other machines are refreshed in rotation, not every tick.** Local rooms are
+  read every tick because reading them is free; a remote one costs a process and a cloud
+  round-trip, so idle remote rooms take turns, oldest first, four per tick. An idle remote
+  agent that starts working is therefore seen within a cycle — about eleven seconds on a
+  seventeen-room fleet — rather than immediately. It is a delay and never a miss, which is the
+  deliberate difference from gating on `lastActivityAt` below.
+- **Remote hosts are the whole cost of a poll.** Local reads are a loopback `fetch` at ~1 ms;
+  a remote one is a `superset` process and a cloud round trip at ~1.2 s, because the host
+  service exposes nothing for other machines. On a 21-agent fleet whose remote half is 17 of
+  them, the median tick runs 5.8 s against the 2.5 s the interval asks for, so the world
+  updates as fast as it can rather than as often as configured. Nothing breaks — the loop times
+  from the start of a poll and never piles ticks up — it just moves less smoothly.
+  `AGENT_FLEET_CLI_INFLIGHT` trades memory for latency at ~130 MB a process (7.9 s at eight,
+  5.8 s at twelve, 5.2 s at sixteen; the curve flattens well before the memory does).
+- **A terminal read from another host arrives with no title.** Shells are told from agents by
+  their title — `user@host:path` — and that only holds on this machine, so every remote shell
+  came back untitled, fell through to `unknown`, and `unknown` is kept as an agent: thirteen
+  `pip install` scrollbacks drawn as thirteen rooms full of nobody. A remote shell is now
+  recognised by having no title, no agent chrome and nothing but a prompt on its bottom line —
+  three signals together, and consulted only after the agent tests have declined, so a
+  recognised agent can never be demoted by it. A terminal that is mid-startup, or an agent
+  whose chrome has scrolled off, still reads as `unknown` and is still kept.
+- **`lastActivityAt` cannot be used to skip a read.** It looks like the obvious way to avoid
+  re-reading an idle terminal, and it is wrong: measured against screen hashes over a 15 s
+  window it agreed 29 times out of 31 and missed two real changes, including an actively
+  working session. Missing a change is the one failure this view must not have, so reads are
+  not gated on it.
+- **`terminal.transcript` is not a traffic log.** The host service will hand back 16–36 KB of
+  an agent's scrollback where a screen read gives 2–4 KB, and for Claude sessions too — which
+  contradicts the note below about there being no history to read. But what comes back is the
+  _conversation_: `User:` and `Assistant:` turns, with no tool calls in it at all. It is better
+  evidence of what an agent is **saying** and no evidence of what it **did**, so it cannot
+  replace the sources above for reconstructing who messaged whom.
+- The transcript source reads **local files**, so it only ever sees orchestrators running on
+  the machine the server is on. A Claude orchestrator driving the fleet from a VM through the
+  MCP tools keeps its transcript on that VM, out of reach; it is scraped from its screen like
+  any Codex agent, with the accuracy that implies. Remote workspaces are deliberately withheld
+  from this source rather than merely failing to open: two machines can hold the same worktree
+  path, which would slug to the same directory and file one agent's calls against another's
+  room.
 - The transcript source is **Claude only**. Codex files its sessions by date rather than by
   working directory, so finding the one belonging to a workspace would mean opening all of
   them — and its commands are in its scrollback anyway, which the screen reader already

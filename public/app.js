@@ -59,6 +59,18 @@ const byId = () => new Map(agents.map((a) => [a.id, a]));
 // hidden by the project filter.
 const nameOf = (id) => allAgents.find((a) => a.id === id)?.name ?? 'someone';
 
+/**
+ * Which machine an agent is really on, shown only when that is not this one.
+ *
+ * A fleet on one box needs no such label, and stamping this machine's name on every card
+ * would be noise on the common case. The moment a VM joins, though, `main` on `Skriptr`
+ * exists twice over and the name alone stops identifying anything.
+ */
+const hostChip = (agent) =>
+  agent.remote && agent.hostName
+    ? `<span class="chip host" title="on another machine">🖥 ${escape(short(agent.hostName, 22))}</span>`
+    : '';
+
 /** Ad-hoc Superset sessions carry no project; they get a bucket of their own. */
 const projectOf = (agent) => (agent.type === 'session' || !agent.project ? '' : agent.project);
 const NO_PROJECT = 'Sessions without a project';
@@ -243,6 +255,7 @@ function card(agent) {
         ${statusPill(agent)}
         ${flavorChip(agent.flavor)}
         ${agent.model ? `<span class="chip">${escape(agent.model)}</span>` : ''}
+        ${hostChip(agent)}
       </div>
       ${isHub && drives ? `<p class="last">driving ${drives} session${drives === 1 ? '' : 's'} inside</p>` : lastExchange(agent.id)}
     </article>`;
@@ -355,6 +368,7 @@ function renderAgent(id) {
         ${statusPill(agent)}
         ${flavorChip(agent.flavor)}
         ${agent.model ? `<span class="chip">${escape(agent.model)}</span>` : ''}
+        ${hostChip(agent)}
         ${agent.branch ? `<span class="chip mono">⎇ ${escape(short(agent.branch, 34))}</span>` : ''}
       </div>
       ${agent.queued.length ? `<p class="unread">✉ ${agent.queued.length} unread — will be read after the current tool call</p>` : ''}

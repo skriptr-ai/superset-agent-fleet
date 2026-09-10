@@ -12,7 +12,7 @@ import { homedir } from 'node:os';
 import { join, dirname, extname, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { World } from './lib/world.js';
-import { cliVersion } from './lib/superset.js';
+import { cliVersion, transportNote, useDirect } from './lib/superset.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = join(HERE, 'public');
@@ -172,6 +172,7 @@ async function handle(request) {
       tick: latest.tick,
       agents: latest.agents.length,
       watchers: clients.size,
+      transport: transportNote(),
     });
   }
   if (pathname === '/api/terminal') {
@@ -217,4 +218,10 @@ Bun.serve({
 console.log(
   `Superset Agent Fleet  http://localhost:${PORT}   (${version}, polling every ${POLL_MS}ms)`,
 );
+// Which transport won is the difference between a millisecond and half a second per read, so
+// it is said out loud rather than left to be inferred from how sluggish the world feels. The
+// probe is awaited here rather than left to the first poll, so the banner reports a decision
+// that has actually been made.
+await useDirect();
+console.log(`  reading through: ${transportNote()}`);
 pollForever();
