@@ -382,6 +382,32 @@ kbd {
   margin-right: 6px;
 }
 
+.pin {
+  margin-top: 10px;
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--dim);
+  border-radius: 7px;
+  padding: 4px 9px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.pin:hover {
+  color: var(--text);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.pin.on {
+  color: var(--purple);
+  border-color: var(--purple);
+}
+
+.pin:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 .tag {
   font-size: 9px;
   font-weight: 700;

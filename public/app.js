@@ -51,6 +51,8 @@ let allAgents = [];
 let agents = [];
 /** The orchestrators the server elected, most-driving first. Each gets a patch of the bar. */
 let hubIds = [];
+/** The ones a person pinned there by hand, on the server this page came from. */
+let pins = new Set();
 /** Project filter: '' shows every session; a project name shows only its workspaces. */
 let projectFilter = '';
 try {
@@ -471,7 +473,7 @@ function renderAgent(id) {
   els.panel.innerHTML = `
     <button class="back" type="button">← all agents</button>
     <div class="agent-head" style="--c:${(STATUS[agent.status] ?? STATUS.idle).color}">
-      ${isBartender(id) ? '<span class="tag">Bartender</span>' : ''}
+      ${isBartender(id) ? `<span class="tag">Bartender${pins.has(id) ? ' · pinned' : ''}</span>` : ''}
       <h2>${heading(agent)}</h2>
       <div class="meta">
         ${statusPill(agent)}
@@ -484,6 +486,7 @@ function renderAgent(id) {
       ${taskLine(agent)}
       ${nowLine(agent, { story: true })}
       ${agent.queued.length ? `<p class="unread">✉ ${agent.queued.length} unread — will be read after the current tool call</p>` : ''}
+      ${pinButton(id)}
     </div>
     <div class="thread">${renderThread(agent)}</div>
     <details class="terminal" ${terminalOpen ? 'open' : ''}>
@@ -492,6 +495,18 @@ function renderAgent(id) {
     </details>`;
 
   els.panel.querySelector('.back').addEventListener('click', () => scene.select(null));
+  const pin = els.panel.querySelector('.pin');
+  if (pin) {
+    pin.addEventListener('click', async () => {
+      pin.disabled = true;
+      try {
+        await setPinned(id, !pins.has(id));
+      } catch (err) {
+        pin.disabled = false;
+        pin.textContent = `could not save: ${err.message}`;
+      }
+    });
+  }
   const details = els.panel.querySelector('details');
   details.addEventListener('toggle', () => {
     terminalOpen = details.open;
@@ -501,6 +516,40 @@ function renderAgent(id) {
   const next = els.panel.querySelector('.thread');
   if (stick) next.scrollTop = next.scrollHeight;
   else if (thread) next.scrollTop = thread.scrollTop;
+}
+
+/**
+ * The one control in the drawer that changes the world rather than describing it.
+ *
+ * Election is from evidence, and evidence can be missing — an orchestrator that drives one
+ * worker at a time never reaches the fanout the server asks for. So a person can say so. A
+ * session the server elected on its own has nothing to pin: the button then offers to pin it
+ * anyway, which is what keeps it behind the bar once its commands scroll off.
+ */
+function pinButton(id) {
+  const pinned = pins.has(id);
+  const elected = isBartender(id) && !pinned;
+  const label = pinned
+    ? 'Unpin from the bar'
+    : elected
+      ? 'Pin behind the bar'
+      : 'Make this the orchestrator';
+  const why = pinned
+    ? 'Elected from evidence again, or back at a table if there is none.'
+    : elected
+      ? 'Stays behind the bar even when its commands are no longer on screen.'
+      : 'Puts this session behind the bar as a bartender, whatever the screens show.';
+  return `<button class="pin ${pinned ? 'on' : ''}" type="button" title="${escape(why)}">${pinned ? '📌 ' : ''}${label}</button>`;
+}
+
+/** Tell the home server; the answering snapshot redraws the room. */
+async function setPinned(id, pinned) {
+  const res = await fetch('/api/hub', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ id, pinned }),
+  });
+  if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
 }
 
 function renderPanel() {
@@ -660,6 +709,8 @@ function redraw() {
   const world = merged();
   allAgents = world.agents;
   hubIds = world.hubIds;
+  // Pins are the home server's alone: that is the one the button posts to.
+  pins = new Set(sources.get('')?.pins ?? []);
   links = world.links;
   renderProjects();
   applyFilter();

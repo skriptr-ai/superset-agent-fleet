@@ -377,10 +377,19 @@ bartender when either holds:
   `terminals send --workspace <orchestrator>` reports — and it is what recovers an orchestrator
   whose own commands were never caught on screen, which is the normal case for Claude.
 
-Before any traffic has been seen at all, one workspace named `orchestrat*` is used as a
-cold-start guess — one, however many match, because it is a guess from a name rather than
-evidence, and it is dropped as soon as a single real command is observed. Who commands whom is remembered in `~/.superset/agent-fleet.json`, so the evidence for a
-bartender survives a restart even after its commands have repainted away.
+Or **a person pinned it.** Open a session in the drawer and press _Make this the orchestrator_;
+it goes behind the bar at once and stays there until unpinned, whatever the screens show. This is
+for the evidence the tool cannot gather: an orchestrator that drives one worker at a time, one
+whose commands scrolled off before the fleet was watched, one on a machine whose transcripts
+this instance cannot read. A session the tool elected on its own can be pinned too, which keeps
+it behind the bar once the traffic that elected it is gone. Pins live with the rest of the state
+in `~/.superset/agent-fleet.json` on the host the page was opened from.
+
+Nothing is guessed from a name. Earlier versions put one workspace called `orchestrat*` behind
+the bar until traffic was seen, and it elected a session titled _Multi agent VM orchestration
+and scaling strategy_ over a fleet it had never spoken to. Who commands whom is remembered in
+`~/.superset/agent-fleet.json`, so the evidence for a bartender survives a restart even after
+its commands have repainted away.
 
 Every elected orchestrator gets a patch of the bar, in the order it was elected — the
 longest-standing bartender keeps its end of the run as others start pouring beside it. A session
@@ -453,9 +462,10 @@ create`). Reads do not count. Looking at a screen is what a curious human, a sta
   never caught on screen, which is the normal case for Claude. The second half of the test is
   what stops it promoting a worker that its orchestrator and a neighbour both messaged.
 
-Before any traffic has been seen at all, workspaces named `orchestrat*` are used as a cold-start
-guess. Who commands whom is remembered in `~/.superset/agent-fleet.json`, so the evidence for a
-bartender survives a restart even after its commands have repainted away.
+A pin from the drawer counts as well, and outranks silence: a pinned session is behind the bar
+whether or not any of its commands were caught. Who commands whom, and what is pinned, is
+remembered in `~/.superset/agent-fleet.json`, so the evidence for a bartender survives a
+restart even after its commands have repainted away.
 
 On start-up, whatever is already in each scrollback is counted in — seating, counts and threads
 are all there on the first tick — but marked `earlier` and never animated. Who-drives-whom is
@@ -528,9 +538,13 @@ service):
 - **The room shows someone else's project** — the top-bar pills filter by project; the choice is
   remembered per browser.
 - **Nobody is behind the bar** — no session has been seen commanding two others yet, none has
-  had two others report to it, and none is named `orchestrat…`. Send a couple of `superset
-terminals send` and the election happens. Until then the whole fleet is out at the tables, which
-  is the truthful picture: nothing is being orchestrated.
+  had two others report to it, and nobody has pinned one. Send a couple of `superset terminals
+send` and the election happens, or open the orchestrator in the drawer and press _Make this
+  the orchestrator_. Until then the whole fleet is out at the tables, which is the truthful
+  picture: nothing is being orchestrated.
+- **The wrong session is behind the bar** — open it in the drawer. If it says _pinned_, unpin
+  it. If not, it was elected from observed commands, which `~/.superset/agent-fleet.json` lists
+  under `drives`.
 - **A second orchestrator has no patch** — it is commanding one worker so far, or its commands
   have not been caught on screen yet. A Claude orchestrator that types at a shell has no
   scrollback, so its evidence is gathered one poll at a time while it works; leave the page open

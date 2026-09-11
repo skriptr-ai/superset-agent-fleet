@@ -141,6 +141,7 @@ let latest = {
   events: [],
   links: [],
   hubIds: [],
+  pins: [],
   error: null,
   logError: null,
   transcriptError: null,
@@ -298,6 +299,30 @@ async function handle(request) {
   }
   // The sky over the town: the place, and the forecast for it, from the server's kept copy.
   if (pathname === '/api/weather') return cors(request, Response.json(await weather.current()));
+  // The one write the browser makes: a person putting a session behind the bar by hand, or
+  // taking it back out. Pins are this instance's — the page merges every host's hubs, so a pin
+  // held here covers an agent drawn by any of them — and the change is pushed to every open
+  // page at once rather than waiting out a poll.
+  if (pathname === '/api/hub' && request.method === 'POST') {
+    let body;
+    try {
+      body = await request.json();
+    } catch {
+      return cors(request, Response.json({ ok: false, error: 'bad json' }, { status: 400 }));
+    }
+    const id = typeof body?.id === 'string' ? body.id : '';
+    if (!id) return cors(request, Response.json({ ok: false, error: 'no id' }, { status: 400 }));
+    const changed = world.pin(id, body.pinned !== false);
+    if (changed) {
+      latest = { ...latest, hubIds: world.hubIds, pins: [...world.pins] };
+      broadcast({ ...latest, events: [] });
+      wake(); // so the pin is saved with the rest of the state now, not at the next idle tick
+    }
+    return cors(
+      request,
+      Response.json({ ok: true, changed, hubIds: world.hubIds, pins: [...world.pins] }),
+    );
+  }
   if (pathname === '/api/terminal') {
     const id = new URL(request.url).searchParams.get('id');
     for (const agent of latest.agents) {
