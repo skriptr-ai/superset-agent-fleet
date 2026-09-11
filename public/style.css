@@ -520,6 +520,9 @@ kbd {
 
 /* A place, not a property of the agent — so it reads as an address rather than as another
    fact about the model or the branch. */
+.chip.folder {
+  opacity: 0.9;
+}
 .chip.host {
   color: var(--dim);
   border-style: dashed;

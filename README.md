@@ -376,6 +376,16 @@ bartender when either holds:
   turn. This is the same fleet seen from the workers' end — their
   `terminals send --workspace <orchestrator>` reports — and it is what recovers an orchestrator
   whose own commands were never caught on screen, which is the normal case for Claude.
+- **It shares a folder with a peer it has been seen commanding.** Superset files a workspace
+  into a sidebar folder per tag (`workspaces create --tag <name>`, or dragging it there), and
+  an orchestrator that tags its workers has filed the whole run together on purpose. Inside a
+  folder the bar drops from two commanded peers to one: a session that _created_ a
+  folder-mate is its coordinator beyond doubt, and one that merely sent to a folder-mate
+  counts while no mate has commanded it back. This is what puts an orchestrator of a single
+  worker behind the bar. A folder with no traffic in it elects nobody — the tag says these
+  belong together, not which of them is in charge — but once a bartender is elected, every
+  session in its folder takes a stool at its patch, whether or not a message between them has
+  been seen yet, and the drawer names the folder over the bar.
 
 Or **a person pinned it.** Open a session in the drawer and press _Make this the orchestrator_;
 it goes behind the bar at once and stays there until unpinned, whatever the screens show. This is
@@ -411,6 +421,18 @@ Nothing is configurable about this and nothing needs to be: the calls are read o
 Code's own session transcript instead, found by the workspace's worktree path and checked
 against the `cwd` each record carries. `AGENT_FLEET_TRANSCRIPTS` moves that directory, `''`
 switches the source off.
+
+A shell orchestrator is read from the same transcript, and a spawn there is named by its
+**output** rather than its command line: `superset workspaces create --json` prints the new
+workspace, and Claude files that output beside the call that made it. What the output looks
+like is up to the orchestrator, so three shapes are read — the CLI's own JSON; the agent's
+summary of a file it saved that JSON to (`jq '{id, name}' ws.json` was a real one, and it went
+unread for an hour); and a bare id on a line, which is `--quiet`. A create whose output names
+nothing at all — `ws=$(superset ws create … --quiet)` — is matched by time instead: the call
+ran between two timestamps the transcript keeps, and a workspace born inside that window by no
+other session's create is the one it made. Either way a create is never credited with a
+workspace older than itself; `ws create --help; ws list` in one call names every workspace
+there is, and made none of them.
 
 The second is **the shell an orchestrator with several workers writes**:
 

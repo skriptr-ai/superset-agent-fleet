@@ -322,6 +322,15 @@ export class Scene {
     return conns;
   }
 
+  /** Live sessions that share a Superset sidebar folder — a tag — with `hubId`. */
+  #folderMatesOf(hubId) {
+    const tags = new Set(this.agents.find((a) => a.id === hubId)?.tags ?? []);
+    if (!tags.size) return [];
+    return this.agents
+      .filter((a) => a.id !== hubId && (a.tags ?? []).some((t) => tags.has(t)))
+      .map((a) => a.id);
+  }
+
   /** The patch of bar this session is pouring behind, if it is a bartender at all. */
   #patchOfHub(id) {
     return this.room?.patches.find((patch) => patch.hubId === id) ?? null;
@@ -439,6 +448,13 @@ export class Scene {
     for (const hubId of hubIds) {
       const conns = this.#connsFor(hubId, claimed);
       const workers = [...conns.keys()].filter((id) => alive.has(id) && !hubSet.has(id));
+      // A session filed in the bartender's folder is on its crew whether or not a message
+      // between them has been seen yet: the tag is the orchestrator saying so. It takes a
+      // stool without a conn — nothing has been exchanged — and gets one the moment it has.
+      for (const id of this.#folderMatesOf(hubId)) {
+        if (hubSet.has(id) || claimed.has(id) || workers.includes(id)) continue;
+        workers.push(id);
+      }
       for (const id of workers) claimed.add(id);
       crews.push({ hubId, conns, workers });
     }
