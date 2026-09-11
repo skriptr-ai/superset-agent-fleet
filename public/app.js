@@ -237,6 +237,18 @@ function statusPill(agent) {
   return `<span class="pill" style="--c:${s.color}"><i></i>${escape(text)}</span>`;
 }
 
+// The sidebar folders the workspace is filed in — Superset's tags. An orchestrator that
+// creates its workers with `--tag` files the whole run together, and the server reads that
+// filing as a reason to seat them at one bar; showing it is how a seat can be argued with.
+function folderChips(agent) {
+  return (agent.tags ?? [])
+    .map(
+      (tag) =>
+        `<span class="chip folder" title="Filed in the Superset sidebar folder “${escape(tag)}”">📁 ${escape(tag)}</span>`,
+    )
+    .join('');
+}
+
 // Which source answered "is it working": the agent's own lifecycle hooks, read off the host
 // service, or its screen. Shown so a status that looks wrong can be argued with.
 function evidenceChip(agent) {
@@ -381,9 +393,13 @@ function renderList() {
     const tenderName = tender
       ? (issueOf(tender.name, tender.branch).key ?? short(tender.name, 24))
       : 'nobody yet';
+    // The folder this crew shares, if the bartender filed its workers with it.
+    const folder = (tender?.tags ?? []).find((tag) =>
+      stools.some((agent) => (agent.tags ?? []).includes(tag)),
+    );
     blocks.push(
       `<h3>At the bar <small>${stools.length}</small></h3>` +
-        `<p class="hint">Orchestrated by ${escape(tenderName)} — messages go straight over the bar.</p>` +
+        `<p class="hint">Orchestrated by ${escape(tenderName)}${folder ? ` · folder 📁 ${escape(folder)}` : ''} — messages go straight over the bar.</p>` +
         (tender ? card(tender) : '') +
         stools.map(card).join(''),
     );
@@ -481,6 +497,7 @@ function renderAgent(id) {
         ${agent.model ? `<span class="chip">${escape(agent.model)}</span>` : ''}
         ${hostChip(agent)}
         ${agent.branch ? `<span class="chip mono">⎇ ${escape(short(agent.branch, 34))}</span>` : ''}
+        ${folderChips(agent)}
         ${evidenceChip(agent)}
       </div>
       ${taskLine(agent)}
