@@ -1320,8 +1320,10 @@ export class Scene {
     }
 
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    // What is falling is on the glass, not in the street: it does not scale with the zoom.
-    drawWeather(ctx, cw, ch, t, this.light, this.weather);
+    // What is falling is on the glass, not in the street: it does not scale with the zoom. It
+    // does stop at the room, whose silhouette goes along in the same screen pixels.
+    const shelter = this.room?.silhouette.map((p) => this.#toScreen(p.x, p.y)) ?? null;
+    drawWeather(ctx, cw, ch, t, this.light, this.weather, shelter);
     this.#drawGlances(ctx, t);
     this.#drawLabels(ctx, byId);
     this.#drawBubbles(ctx, t, byId);

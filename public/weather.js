@@ -8,6 +8,11 @@
 //
 // Every drop and flake is placed by a hash of its index and moved by the clock, so the sky
 // needs no state between frames and looks the same on every screen.
+//
+// The restaurant has no roof, but it does not rain in it. Whatever falls is cut away over the
+// room's silhouette, so the dining room stays dry while the street around it gets wet. The
+// light is another matter: fog and a lightning flash are the air and the sky, and they reach
+// in through the open front like the sun does.
 
 import { hash } from './draw.js';
 
@@ -19,8 +24,25 @@ function falling(weather, kind) {
   return 0;
 }
 
-/** Everything on the glass: rain, snow, fog and lightning, in that order. */
-export function drawWeather(ctx, cw, ch, t, light, weather) {
+/**
+ * Clip to the whole glass except `shelter`, a polygon in screen pixels. Even-odd fill makes the
+ * polygon a hole in the rectangle, whichever way round its points run.
+ */
+function clipOutside(ctx, cw, ch, shelter) {
+  if (!shelter || shelter.length < 3) return;
+  ctx.beginPath();
+  ctx.rect(0, 0, cw, ch);
+  ctx.moveTo(shelter[0].x, shelter[0].y);
+  for (let i = 1; i < shelter.length; i++) ctx.lineTo(shelter[i].x, shelter[i].y);
+  ctx.closePath();
+  ctx.clip('evenodd');
+}
+
+/**
+ * Everything on the glass: rain, snow, fog and lightning, in that order. Rain and snow fall
+ * everywhere but `shelter`, the room's outline on screen; fog and lightning cover it all.
+ */
+export function drawWeather(ctx, cw, ch, t, light, weather, shelter = null) {
   if (!weather) return;
   const rain = falling(weather, 'rain');
   const snow = falling(weather, 'snow');
@@ -32,6 +54,7 @@ export function drawWeather(ctx, cw, ch, t, light, weather) {
     const speed = 0.55 + rain * 0.45; // px per ms
     const span = ch + 60;
     ctx.save();
+    clipOutside(ctx, cw, ch, shelter);
     ctx.strokeStyle = light.day > 0.5 ? 'rgba(110,130,160,0.6)' : 'rgba(190,205,230,0.5)';
     ctx.lineWidth = 1;
     ctx.beginPath();
@@ -52,6 +75,7 @@ export function drawWeather(ctx, cw, ch, t, light, weather) {
     const n = Math.round((snow * cw * ch) / 5000);
     const span = ch + 40;
     ctx.save();
+    clipOutside(ctx, cw, ch, shelter);
     ctx.fillStyle = 'rgba(240,245,255,0.9)';
     for (let i = 0; i < n; i++) {
       const h = hash(`s${i}`);

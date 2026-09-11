@@ -173,8 +173,10 @@ at civil dusk and go off at dawn, the windows across the city light up as it get
 river turns from lamplight to sky, and a December afternoon is already evening while a June one
 never quite goes black. The weather is real too, from the Norwegian Meteorological Institute's
 forecast for the same place: cloud dims the day and drags its shadows across the roofs, rain and
-snow fall on the glass, fog closes in, and a storm flashes. The header shows the sky and the
-temperature beside the time; hover it for the sun's height and when the forecast was read. To
+snow fall on the glass, fog closes in, and a storm flashes. The restaurant has no roof, but it
+stays dry: what falls stops at its walls and the edge of its floor, and only the light of the
+weather comes in. The header shows the sky and the temperature beside the time; hover it for the
+sun's height and when the forecast was read. To
 look at a sky you do not have, pin one in the URL: `?at=22:30` or `?at=2026-12-21T15:00:00Z`
 for a moment, `?weather=rain` (or `snow`, `sleet`, `fog`, `thunder`, `cloudy`, `partly`,
 `clear`) for the weather. Where the town is comes from `AGENT_FLEET_PLACE`, `AGENT_FLEET_TZ`,
