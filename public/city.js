@@ -13,6 +13,7 @@
 import { TILE_H, iso, isoBox, px, hash } from './draw.js';
 import { S, tint, faceQuad, awning, streetProp, backRailing } from './street.js';
 import { CITY } from './district.js';
+import { sky } from './daylight.js';
 
 const YARD = '#3a4148';
 const YARD_LINE = '#333a42';
@@ -45,6 +46,17 @@ function tileBounds(view) {
     ymin: Math.floor(Math.min(...ys)) - 1,
     ymax: Math.ceil(Math.max(...ys)) + 1,
   };
+}
+
+/** A colour part-way from `a` to `b`, both hex; `k` is how far. */
+function blend(a, b, k) {
+  const n = parseInt(a.slice(1), 16);
+  const m = parseInt(b.slice(1), 16);
+  const ch = (shift) => {
+    const v = ((n >> shift) & 255) + (((m >> shift) & 255) - ((n >> shift) & 255)) * k;
+    return Math.round(v);
+  };
+  return `#${((ch(16) << 16) | (ch(8) << 8) | ch(0)).toString(16).padStart(6, '0')}`;
 }
 
 /** A small deterministic generator, so a block looks the same every time it is looked at. */
@@ -299,10 +311,15 @@ function drawRiver(ctx, district, view, a, b, t) {
   // The water: a half-plane, lit along the quay.
   const mx = (a + b) / 2;
   const my = edge(mx) + QUAY_H;
+  // A gradient's stops do not go through the context, so they are shaded by hand — and the
+  // water has a day of its own, because a river takes its colour from the sky over it, not
+  // from the lamps along it: the tone map would only lift the night's black to a grey.
   const g = ctx.createLinearGradient(mx, my, mx - 0.447 * 320, my + 0.894 * 320);
-  g.addColorStop(0, '#26384c');
-  g.addColorStop(0.35, '#1a2736');
-  g.addColorStop(1, WATER);
+  const day = sky.light.day;
+  const stop = (night, noon) => sky.shade(blend(night, noon, day));
+  g.addColorStop(0, stop('#26384c', '#6f9dc4'));
+  g.addColorStop(0.35, stop('#1a2736', '#5484ae'));
+  g.addColorStop(1, stop(WATER, '#3f6a93'));
   ctx.fillStyle = g;
   ctx.beginPath();
   ctx.moveTo(a, edge(a) + QUAY_H);
@@ -330,7 +347,8 @@ function drawRiver(ctx, district, view, a, b, t) {
       const drift = Math.sin(t / 1600 + (h % 17)) * 3;
       const bright = 0.18 + near * 0.35 + 0.15 * Math.sin(t / 900 + h);
       ctx.globalAlpha = Math.max(0.08, bright);
-      px(ctx, wx + drift, wy, '#6d87a6', 5 + (h % 4), 1);
+      // The city's glow on the water by night; by day, the sky's.
+      px(ctx, wx + drift, wy, sky.light.day > 0.5 ? '#a9c4dc' : '#6d87a6', 5 + (h % 4), 1);
     }
   }
   ctx.globalAlpha = 1;
@@ -485,19 +503,36 @@ function drawBuilding(ctx, bld, t) {
   // The ground floor: a darker plinth, with a shop lit on the front of some of them.
   faceQuad(ctx, x, y + d, 0, w, 0, 15, bld.plinth);
   sideQuad(ctx, x + w, y, 0, d, 0, 15, tint(bld.plinth, -12));
+  const lamps = sky.light.lamps;
   if (bld.shop) {
-    faceQuad(ctx, x, y + d, 0.2, w - 0.2, 2, 12, 'rgba(244,213,138,0.85)');
+    // A shop window is lit after dark and glass in the day.
+    faceQuad(ctx, x, y + d, 0.2, w - 0.2, 2, 12, 'rgba(150,180,205,0.5)');
+    if (lamps > 0.02) {
+      ctx.save();
+      ctx.globalAlpha = lamps;
+      faceQuad(ctx, x, y + d, 0.2, w - 0.2, 2, 12, 'rgba(244,213,138,0.85)');
+      ctx.restore();
+    }
     faceQuad(ctx, x, y + d, 0.2, w - 0.2, 2, 4.5, 'rgba(0,0,0,0.3)');
     awning(ctx, x + 0.1, y + d, w - 0.2, 15, 0.42, bld.awning[0], bld.awning[1], 3);
   } else {
     faceQuad(ctx, x, y + d, 0.4, 0.9, 1, 11, '#1b1f27');
   }
-  ctx.fillStyle = bld.glow;
-  ctx.fill(bld.lit);
+  // Every window is dark glass; the ones with someone home are lit over that as the lamps
+  // come on, so a building's windows go out one dusk and come on the next without any of
+  // them changing which they are.
   ctx.fillStyle = 'rgba(12,16,24,0.55)';
   ctx.fill(bld.dark);
+  ctx.fill(bld.lit);
+  if (lamps > 0.02) {
+    ctx.save();
+    ctx.globalAlpha = lamps;
+    ctx.fillStyle = bld.glow;
+    ctx.fill(bld.lit);
+    ctx.restore();
+  }
   for (const f of bld.flicker) {
-    if (Math.sin(t / f.period + f.phase) > 0.2) continue;
+    if (lamps < 0.5 || Math.sin(t / f.period + f.phase) > 0.2) continue;
     ctx.fillStyle = 'rgba(12,16,24,0.7)';
     ctx.beginPath();
     ctx.moveTo(f.a.x, f.a.y - f.v0);
@@ -707,10 +742,13 @@ function boat(ctx, x, y, t) {
   isoBox(ctx, x + 0.5, y + 0.2, 1.1, 0.5, 8, '#e8e4d8', '#8a877c', '#bdb9ad', z + 6);
   const p = iso(x + 1.9, y + 0.45, z + 6);
   px(ctx, p.x, p.y - 26, '#3a2a22', 1, 26);
-  if (Math.sin(t / 900 + x) > -0.6) px(ctx, p.x - 1, p.y - 28, '#ffe9a8', 3, 3);
+  const lamps = sky.light.lamps;
+  if (lamps < 0.5) px(ctx, p.x - 1, p.y - 28, '#d9c9a0', 3, 3);
+  else if (Math.sin(t / 900 + x) > -0.6) px(ctx, p.x - 1, p.y - 28, '#ffe9a8', 3, 3);
+  if (lamps < 0.02) return;
   const q = iso(x + 1.2, y + 0.45, z + 6);
   ctx.save();
-  ctx.globalAlpha = 0.25;
+  ctx.globalAlpha = 0.25 * lamps;
   ctx.fillStyle = '#ffe9a8';
   ctx.beginPath();
   ctx.ellipse(q.x, q.y + 18, 18, 6, 0, 0, Math.PI * 2);

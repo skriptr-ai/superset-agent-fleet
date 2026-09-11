@@ -81,6 +81,8 @@ import {
   car,
 } from './street.js';
 import { drawCityGround, cityObjects, cityStreetProps, drawQuay } from './city.js';
+import { Lighting, lightAt, pinnedTime, DEFAULT_PLACE } from './daylight.js';
+import { drawWeather, drawCloudShadows } from './weather.js';
 
 const WALL_H = HOUSE_WALL_H;
 /**
@@ -184,6 +186,16 @@ export class Scene {
     this.home = null;
     /** Override to freeze or scrub the animation clock; null means real time. */
     this.clock = null;
+    /**
+     * The sky. The town is drawn for the night and lit up to the hour by the tone map; the
+     * place is where the sun is worked out over, the weather what it has to get through.
+     * `pinnedAt` is a moment from the URL to draw instead of now, for looking at a night.
+     */
+    this.lighting = new Lighting(this.ctx);
+    this.place = DEFAULT_PLACE;
+    this.weather = null;
+    this.pinnedAt = pinnedTime(window.location.search);
+    this.light = lightAt(this.pinnedAt ?? new Date(), this.place, null);
 
     this.#bindInput();
     this.#resize();
@@ -198,6 +210,24 @@ export class Scene {
 
   #now() {
     return this.clock ? this.clock() : performance.now();
+  }
+
+  // ── the sky ───────────────────────────────────────────────────────────────────────────────
+
+  /** Where the town is, as the server says: the sun is worked out over it from now on. */
+  setPlace(place) {
+    if (place?.tz && Number.isFinite(place.lat) && Number.isFinite(place.lon)) this.place = place;
+    this.pinnedAt = pinnedTime(window.location.search, this.place);
+  }
+
+  /** The weather over the town, as lib/weather.js summarised it; null draws clear skies. */
+  setWeather(weather) {
+    this.weather = weather ?? null;
+  }
+
+  /** The moment being drawn: pinned by the URL, or now. */
+  skyTime() {
+    return this.pinnedAt ?? new Date();
   }
 
   // ── world state ───────────────────────────────────────────────────────────────────────────
@@ -1248,8 +1278,12 @@ export class Scene {
 
     // The room is drawn straight onto the retina canvas at the exact zoom, never resampled:
     // vector shapes are crisp at any scale, and the figures' whole-unit cells stay square.
+    // The light for this frame; the tone map is on only while the world is being drawn, so
+    // the chrome underneath keeps its own colours.
+    this.light = lightAt(this.skyTime(), this.place, this.weather);
+    this.lighting.set(this.light);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.fillStyle = '#0e1219';
+    ctx.fillStyle = this.lighting.shade('#0e1219');
     ctx.fillRect(0, 0, cw, ch);
     const k = this.camera.zoom;
     if (this.district) {
@@ -1263,10 +1297,15 @@ export class Scene {
         zoom: k,
       };
       ctx.setTransform(dpr * k, 0, 0, dpr * k, -this.camera.x * dpr * k, -this.camera.y * dpr * k);
+      this.lighting.begin();
       this.#drawWorld(ctx, t, byId, view);
+      drawCloudShadows(ctx, view, t, this.light, this.weather);
+      this.lighting.end();
     }
 
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    // What is falling is on the glass, not in the street: it does not scale with the zoom.
+    drawWeather(ctx, cw, ch, t, this.light, this.weather);
     this.#drawGlances(ctx, t);
     this.#drawLabels(ctx, byId);
     this.#drawBubbles(ctx, t, byId);

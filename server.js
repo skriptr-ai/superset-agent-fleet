@@ -13,6 +13,7 @@ import { join, dirname, extname, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { World } from './lib/world.js';
 import { cliVersion, transportNote, useDirect } from './lib/superset.js';
+import { Weather } from './lib/weather.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = join(HERE, 'public');
@@ -116,6 +117,19 @@ const TRANSCRIPT_ROOT =
     ? null
     : (process.env.AGENT_FLEET_TRANSCRIPTS ??
       join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'projects'));
+
+/**
+ * Where the town is. The picture follows the sun and the weather over this place, so a fleet
+ * watched from Bergen or from a VM in Frankfurt still shows the office's sky. The zone is what
+ * the header clock reads in; the coordinates are what the forecast is fetched for.
+ */
+const PLACE = {
+  name: process.env.AGENT_FLEET_PLACE ?? 'Oslo',
+  tz: process.env.AGENT_FLEET_TZ ?? 'Europe/Oslo',
+  lat: Number(process.env.AGENT_FLEET_LAT ?? 59.9139),
+  lon: Number(process.env.AGENT_FLEET_LON ?? 10.7522),
+};
+const weather = new Weather(PLACE);
 
 const world = new World(STATE_PATH, LOG_PATH, TRANSCRIPT_ROOT, SCOPE);
 await world.load();
@@ -282,6 +296,8 @@ async function handle(request) {
       }),
     );
   }
+  // The sky over the town: the place, and the forecast for it, from the server's kept copy.
+  if (pathname === '/api/weather') return cors(request, Response.json(await weather.current()));
   if (pathname === '/api/terminal') {
     const id = new URL(request.url).searchParams.get('id');
     for (const agent of latest.agents) {

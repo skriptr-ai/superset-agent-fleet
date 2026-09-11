@@ -12,6 +12,7 @@ import {
   taskTitle,
   turnStory,
 } from './draw.js';
+import { DEFAULT_PLACE } from './daylight.js';
 
 const scene = new Scene(document.getElementById('world'));
 // A console handle, so a scene can be poked at without a live orchestrator to hand.
@@ -26,6 +27,10 @@ const els = {
   drawer: document.getElementById('drawer'),
   drawerTitle: document.getElementById('drawer-title'),
   close: document.getElementById('close'),
+  clock: document.getElementById('clock'),
+  clockTime: document.getElementById('clock-time'),
+  clockPlace: document.getElementById('clock-place'),
+  clockWeather: document.getElementById('clock-weather'),
 };
 
 // The harness marks, as tiny inline SVGs: Claude's spark on orange, Codex's ring on black.
@@ -700,5 +705,122 @@ async function connect() {
   }
 }
 
+// ── the sky: the town's clock and its weather ────────────────────────────────────────────────
+
+/** Where the town is, as the server says; Oslo until it does. */
+let place = DEFAULT_PLACE;
+/** The forecast summary, or null while there is none; and why not, if the server said. */
+let weather = null;
+let weatherError = null;
+
+/** How often the page asks the server for the sky. The server's own copy is what rate-limits met.no. */
+const WEATHER_POLL_MS = 10 * 60_000;
+
+/** met.no's symbol, as a glyph for the header. */
+const SKY_GLYPH = {
+  clearsky: ['☀', '🌙'],
+  fair: ['🌤', '🌙'],
+  partlycloudy: ['⛅', '☁'],
+  cloudy: ['☁', '☁'],
+  fog: ['🌫', '🌫'],
+};
+function skyGlyph(w) {
+  if (!w) return '';
+  if (w.thunder) return '⛈';
+  if (w.kind === 'snow') return '🌨';
+  if (w.kind === 'sleet') return '🌨';
+  if (w.kind === 'rain') return w.intensity >= 1 ? '🌧' : '🌦';
+  const pair = SKY_GLYPH[w.symbol];
+  return pair ? pair[scene.light.lamps > 0.5 ? 1 : 0] : '';
+}
+
+/**
+ * A sky to draw instead of the real one, from the URL — `?weather=rain`, `snow`, `sleet`,
+ * `fog`, `thunder`, `cloudy`, `partly`, `clear` — so a storm can be looked at on a fine day.
+ */
+function pinnedWeather() {
+  const want = new URLSearchParams(window.location.search).get('weather');
+  if (!want) return null;
+  const base = {
+    symbol: 'clearsky',
+    kind: null,
+    intensity: 0,
+    cloud: 0,
+    fog: false,
+    thunder: false,
+  };
+  const named = {
+    clear: base,
+    partly: { ...base, symbol: 'partlycloudy', cloud: 0.55 },
+    cloudy: { ...base, symbol: 'cloudy', cloud: 1 },
+    fog: { ...base, symbol: 'fog', cloud: 1, fog: true },
+    rain: { ...base, symbol: 'rain', kind: 'rain', intensity: 0.7, cloud: 1 },
+    heavyrain: { ...base, symbol: 'heavyrain', kind: 'rain', intensity: 1, cloud: 1 },
+    sleet: { ...base, symbol: 'sleet', kind: 'sleet', intensity: 0.7, cloud: 1 },
+    snow: { ...base, symbol: 'snow', kind: 'snow', intensity: 0.7, cloud: 1 },
+    thunder: {
+      ...base,
+      symbol: 'rainandthunder',
+      kind: 'rain',
+      intensity: 0.8,
+      cloud: 1,
+      thunder: true,
+    },
+  };
+  const w = named[want];
+  return w ? { ...w, temperature: null, wind: 4, pinned: true } : null;
+}
+
+function renderClock() {
+  const at = scene.skyTime();
+  els.clockTime.textContent = new Intl.DateTimeFormat('en-GB', {
+    timeZone: place.tz,
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).format(at);
+  els.clockPlace.textContent = place.name;
+  const temp =
+    weather && typeof weather.temperature === 'number' ? `${Math.round(weather.temperature)}°` : '';
+  const glyph = skyGlyph(weather);
+  els.clockWeather.textContent = [glyph, temp].filter(Boolean).join(' ');
+  const full = new Intl.DateTimeFormat('en-GB', {
+    timeZone: place.tz,
+    dateStyle: 'full',
+    timeStyle: 'long',
+  }).format(at);
+  const sun = `sun ${Math.round(scene.light.elevation)}° ${scene.light.elevation > 0 ? 'above' : 'below'} the horizon`;
+  const sky = weather
+    ? `${weather.symbol ?? 'unknown sky'}${weather.pinned ? ' (pinned by the URL)' : ` as of ${clock(Date.parse(weather.at))}`}`
+    : weatherError
+      ? `no forecast: ${weatherError}`
+      : 'no forecast yet';
+  els.clock.title = `${full}\n${sun}\n${sky}`;
+}
+
+async function fetchWeather() {
+  try {
+    const res = await fetch('/api/weather');
+    if (!res.ok) throw new Error(`weather answered ${res.status}`);
+    const body = await res.json();
+    if (body.place) {
+      place = body.place;
+      scene.setPlace(place);
+    }
+    weatherError = body.error ?? null;
+    // A pinned sky beats the real one; the real one is still fetched so the place is right.
+    weather = pinnedWeather() ?? body.weather ?? null;
+  } catch (err) {
+    weatherError = err.message;
+    weather = pinnedWeather();
+  }
+  scene.setWeather(weather);
+  renderClock();
+}
+
 renderPanel();
 connect();
+renderClock();
+setInterval(renderClock, 1000);
+fetchWeather();
+setInterval(fetchWeather, WEATHER_POLL_MS);
