@@ -167,6 +167,19 @@ Zoom is continuous: scroll or pinch about the cursor, double-click to zoom in on
 drawer · `F` fits the whole block · `1` frames the room, `2` the bar, `3` the tables and `4` the
 street · `R` hides check-ins.
 
+**The sky is Oslo's.** The clock at the right of the header is the town's own time, and the
+town keeps it: the sun is worked out over the place the fleet is in, so the street lamps come on
+at civil dusk and go off at dawn, the windows across the city light up as it gets dark, the
+river turns from lamplight to sky, and a December afternoon is already evening while a June one
+never quite goes black. The weather is real too, from the Norwegian Meteorological Institute's
+forecast for the same place: cloud dims the day and drags its shadows across the roofs, rain and
+snow fall on the glass, fog closes in, and a storm flashes. The header shows the sky and the
+temperature beside the time; hover it for the sun's height and when the forecast was read. To
+look at a sky you do not have, pin one in the URL: `?at=22:30` or `?at=2026-12-21T15:00:00Z`
+for a moment, `?weather=rain` (or `snow`, `sleet`, `fog`, `thunder`, `cloudy`, `partly`,
+`clear`) for the weather. Where the town is comes from `AGENT_FLEET_PLACE`, `AGENT_FLEET_TZ`,
+`AGENT_FLEET_LAT` and `AGENT_FLEET_LON`; it is Oslo until told otherwise.
+
 ## How it knows
 
 Who exists comes from four questions — `hosts list`, then `workspaces list`, `terminals list`
@@ -484,22 +497,25 @@ served fresh on every request.
 All optional, as environment variables (put them in the plist's `EnvironmentVariables` for the
 service):
 
-| Variable                           | Default                         | Meaning                                                                 |
-| ---------------------------------- | ------------------------------- | ----------------------------------------------------------------------- |
-| `AGENT_FLEET_PORT`                 | `4400`                          | Port. One fleet per machine, so one server per machine                  |
-| `AGENT_FLEET_BIND`                 | `127.0.0.1`                     | Interface to serve on. Name an address; `0.0.0.0` is refused            |
-| `AGENT_FLEET_TOKEN`                | _unset_                         | Required on `/api` once set. Mandatory to bind beyond loopback          |
-| `AGENT_FLEET_SCOPE`                | `fleet`                         | `host` reads only this machine, leaving the rest to their own instances |
-| `AGENT_FLEET_PEERS`                | _unset_                         | Other hosts' instances, comma-separated, merged in the browser          |
-| `AGENT_FLEET_POLL_MS`              | `2500`                          | Poll interval while a page is open                                      |
-| `AGENT_FLEET_IDLE_POLL_MS`         | `20000`                         | Poll interval with nobody watching                                      |
-| `AGENT_FLEET_STATE`                | `~/.superset/agent-fleet.json`  | Where who-drives-whom is remembered; `''` to forget                     |
-| `AGENT_FLEET_LOG`                  | `~/.superset/agent-fleet.jsonl` | What `bin/superset-send` recorded; `''` to ignore                       |
-| `AGENT_FLEET_TRANSCRIPTS`          | `~/.claude/projects`            | Claude Code's sessions, where MCP calls are read from; `''` to ignore   |
-| `AGENT_FLEET_READ_CONCURRENCY`     | `32`                            | Workspaces read at once; free now that local reads spawn nothing        |
-| `AGENT_FLEET_CLI_INFLIGHT`         | `12`                            | `superset` processes alive at once; each is ~130 MB                     |
-| `AGENT_FLEET_REMOTE_IDLE_PER_TICK` | `4`                             | Idle remote workspaces re-read per tick; local ones are always read     |
-| `SUPERSET_CLI`                     | `superset`                      | The CLI binary, if it is not on `PATH`                                  |
+| Variable                             | Default                         | Meaning                                                                 |
+| ------------------------------------ | ------------------------------- | ----------------------------------------------------------------------- |
+| `AGENT_FLEET_PORT`                   | `4400`                          | Port. One fleet per machine, so one server per machine                  |
+| `AGENT_FLEET_BIND`                   | `127.0.0.1`                     | Interface to serve on. Name an address; `0.0.0.0` is refused            |
+| `AGENT_FLEET_TOKEN`                  | _unset_                         | Required on `/api` once set. Mandatory to bind beyond loopback          |
+| `AGENT_FLEET_SCOPE`                  | `fleet`                         | `host` reads only this machine, leaving the rest to their own instances |
+| `AGENT_FLEET_PEERS`                  | _unset_                         | Other hosts' instances, comma-separated, merged in the browser          |
+| `AGENT_FLEET_POLL_MS`                | `2500`                          | Poll interval while a page is open                                      |
+| `AGENT_FLEET_IDLE_POLL_MS`           | `20000`                         | Poll interval with nobody watching                                      |
+| `AGENT_FLEET_STATE`                  | `~/.superset/agent-fleet.json`  | Where who-drives-whom is remembered; `''` to forget                     |
+| `AGENT_FLEET_LOG`                    | `~/.superset/agent-fleet.jsonl` | What `bin/superset-send` recorded; `''` to ignore                       |
+| `AGENT_FLEET_TRANSCRIPTS`            | `~/.claude/projects`            | Claude Code's sessions, where MCP calls are read from; `''` to ignore   |
+| `AGENT_FLEET_READ_CONCURRENCY`       | `32`                            | Workspaces read at once; free now that local reads spawn nothing        |
+| `AGENT_FLEET_CLI_INFLIGHT`           | `12`                            | `superset` processes alive at once; each is ~130 MB                     |
+| `AGENT_FLEET_REMOTE_IDLE_PER_TICK`   | `4`                             | Idle remote workspaces re-read per tick; local ones are always read     |
+| `AGENT_FLEET_PLACE`                  | `Oslo`                          | The town's name, as the header clock shows it                           |
+| `AGENT_FLEET_TZ`                     | `Europe/Oslo`                   | The zone the header clock reads in                                      |
+| `AGENT_FLEET_LAT`, `AGENT_FLEET_LON` | `59.9139`, `10.7522`            | Where the sun and the forecast are worked out for                       |
+| `SUPERSET_CLI`                       | `superset`                      | The CLI binary, if it is not on `PATH`                                  |
 
 ## Troubleshooting
 
@@ -535,6 +551,9 @@ lib/fleetlog.js               reads what bin/superset-send recorded
 lib/transcripts.js            reads a Claude session's own record of the MCP calls it made
 lib/parse.js                  terminal screen -> status, model, last utterance, CLI calls
 lib/world.js                  the fleet as state, the per-tick diff that becomes events
+lib/weather.js                the forecast for the town, from api.met.no, kept and boiled down
+public/daylight.js            where the sun is over the town, and the tone map that lights the night palette for it
+public/weather.js             what falls on the glass, the fog, the storm, and cloud shadows on the roofs
 public/draw.js                the room, the furniture and the people, as pixel art drawn from code
 public/street.js              the restaurant's frontage, the road, the pavement and the vans
 public/district.js            the one tile grid it all stands on: the bar, the tables, the kerb, what is walkable

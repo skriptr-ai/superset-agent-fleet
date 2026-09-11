@@ -7,6 +7,7 @@
 
 import { TILE_W, TILE_H, iso, isoBox, px, C } from './draw.js';
 import { KITCHEN_ROWS, COUNTER_Y, STOOL_X, FLOOR_X, HOUSE_WALL_H } from './district.js';
+import { sky } from './daylight.js';
 
 export const S = {
   asphalt: '#2b2f38',
@@ -365,16 +366,21 @@ function bollard(ctx, x, y) {
   px(ctx, p.x - 2, p.y - 7, '#c9a227', 4, 2);
 }
 
-/** A street lamp, lit. It stays lit: a lamp that blinks reads as a fault, not as a night. */
+/**
+ * A street lamp. Lit from dusk to dawn and never blinking in between: a lamp that blinks reads
+ * as a fault, not as a night. By day it is a grey lantern on a post.
+ */
 function streetLamp(ctx, x, y) {
   const p = iso(x + 0.5, y + 0.5);
   const h = 46;
+  const lamps = sky.light.lamps;
   px(ctx, p.x - 3, p.y - 3, '#3a4049', 7, 3);
   px(ctx, p.x - 1, p.y - h, '#454c57', 2, h - 2);
   px(ctx, p.x - 1, p.y - h - 1, '#545c69', 7, 2);
-  px(ctx, p.x + 4, p.y - h + 1, '#ffe9a8', 5, 4);
+  px(ctx, p.x + 4, p.y - h + 1, lamps > 0.5 ? '#ffe9a8' : '#c9ccd2', 5, 4);
+  if (lamps < 0.02) return;
   ctx.save();
-  ctx.globalAlpha = 0.09;
+  ctx.globalAlpha = 0.09 * lamps;
   ctx.fillStyle = '#ffe1a0';
   ctx.beginPath();
   ctx.moveTo(p.x + 6, p.y - h + 4);
@@ -382,7 +388,7 @@ function streetLamp(ctx, x, y) {
   ctx.lineTo(p.x - 12, p.y + 5);
   ctx.closePath();
   ctx.fill();
-  ctx.globalAlpha = 0.07;
+  ctx.globalAlpha = 0.07 * lamps;
   ctx.beginPath();
   ctx.ellipse(p.x + 6, p.y + 2, 20, 9, 0, 0, Math.PI * 2);
   ctx.fill();
@@ -481,13 +487,14 @@ export function car(ctx, x, y, index, dir, t, fade = 1) {
     ctx.ellipse(p.x, p.y - 2, 4, 3.4, 0, 0, Math.PI * 2);
     ctx.fill();
   }
-  // Headlights lead, tail lights follow.
+  // Headlights lead, tail lights follow. The lights are on all day — this is Norway — but
+  // they only throw a pool on the road after dark.
   const nose = iso(dir > 0 ? x + w : x, yF - 0.1);
   px(ctx, nose.x - 2, nose.y - 9, '#fff3c9', 3, 2);
   const tail = iso(dir > 0 ? x : x + w, yF - 0.1);
   px(ctx, tail.x - 1, tail.y - 9, '#e05a4a', 2, 2);
   ctx.save();
-  ctx.globalAlpha = 0.14 * fade;
+  ctx.globalAlpha = 0.14 * fade * sky.light.lamps;
   ctx.fillStyle = '#fff3c9';
   ctx.beginPath();
   ctx.ellipse(nose.x + dir * 16, nose.y - 2, 20, 7, 0, 0, Math.PI * 2);
@@ -575,12 +582,13 @@ export function restaurantTerrace(ctx, house, t) {
   faceTextFit(ctx, door.x - 0.4, d + 0.95, 0.9, 35, house.name.toUpperCase(), 26, 5.2, skin.trim);
 
   const lamp = iso(door.x + 0.5, d + 0.55);
-  const glow = Math.sin(t / 800) > -0.94;
+  const lamps = sky.light.lamps;
+  const glow = lamps > 0.5 && Math.sin(t / 800) > -0.94;
   px(ctx, lamp.x - 1, lamp.y - 40, '#3a2a22', 2, 6);
   px(ctx, lamp.x - 3, lamp.y - 35, glow ? '#ffe9a8' : '#c8b47e', 6, 5);
   if (glow) {
     ctx.save();
-    ctx.globalAlpha = 0.14;
+    ctx.globalAlpha = 0.14 * lamps;
     ctx.fillStyle = '#ffe1a0';
     ctx.beginPath();
     ctx.ellipse(lamp.x, lamp.y + 2, 24, 11, 0, 0, Math.PI * 2);
