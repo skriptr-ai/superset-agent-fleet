@@ -5,6 +5,8 @@
 // character per pixel — so a shirt colour or a chef's hat is a palette swap and not a new
 // drawing. The exterior half of the world is in street.js and shares these primitives.
 
+import { sky } from './daylight.js';
+
 export const TILE_W = 32; // one floor tile, in world units: a 2:1 diamond. One unit is one
 // pixel of the art; the camera scales the whole canvas, so a unit is as many screen pixels
 // as the zoom says.
@@ -340,8 +342,9 @@ export function walls(ctx, ox, w, d, height) {
 }
 
 /**
- * A window in a wall, with the night outside it: a sash frame, four panes, a sill, and a few lit
- * windows in the block across the street that come and go on their own clock.
+ * A window in a wall, with the sky outside it — night, or day, or the dusk between — a sash
+ * frame, four panes, a sill, and a few lit windows in the block across the street that come
+ * and go on their own clock once the lamps are on.
  *
  * `side` is -1 for the left wall (placed by row `y`) and 1 for the back wall (placed by column
  * `x`), the same convention the pictures and the lamps use.
@@ -363,13 +366,15 @@ export function wallWindow(ctx, ox, x, y, side, z, t) {
     ctx.fill();
   };
 
+  const { day, lamps } = sky.light;
   quad(0, w, -3, h + 3, '#6b563a'); // the frame
-  quad(2, w - 2, -1, h + 1, '#12161d'); // the night behind it
+  quad(2, w - 2, -1, h + 1, '#12161d'); // the night behind it…
+  if (day > 0.01) quad(2, w - 2, -1, h + 1, `rgba(150,190,220,${(0.9 * day).toFixed(3)})`); // …or the day
   // Whatever is across the street, blinking on and off a window at a time.
   for (let i = 0; i < 7; i++) {
     const u = 4 + (i % 4) * 5;
     const v = 4 + Math.floor(i / 4) * 8;
-    const on = Math.sin(t / 2600 + i * 2.3 + x + y) > -0.2;
+    const on = lamps > 0.5 && Math.sin(t / 2600 + i * 2.3 + x + y) > -0.2;
     quad(u, u + 3, v, v + 4, on ? 'rgba(255,224,150,0.75)' : 'rgba(90,105,130,0.35)');
   }
   // A wash of sky at the top, the glazing bars, and a sill under the lot.
