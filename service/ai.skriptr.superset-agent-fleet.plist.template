@@ -7,7 +7,7 @@
 
   <!-- Absolute paths on purpose: launchd gives jobs no shell and a bare PATH. -->
   <key>ProgramArguments</key>
-  <array>
+  <array>__DOPPLER__
     <string>__BUN__</string>
     <string>server.js</string>
   </array>
@@ -20,7 +20,7 @@
     <key>PATH</key>
     <string>__PATH__</string>
     <key>HOME</key>
-    <string>__HOME__</string>
+    <string>__HOME__</string>__DOPPLER_ENV__
   </dict>
 
   <key>RunAtLoad</key>

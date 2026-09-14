@@ -14,6 +14,7 @@ import { fileURLToPath } from 'node:url';
 import { World } from './lib/world.js';
 import { cliVersion, transportNote, useDirect } from './lib/superset.js';
 import { Weather } from './lib/weather.js';
+import { Reporter } from './lib/report.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = join(HERE, 'public');
@@ -133,6 +134,30 @@ const weather = new Weather(PLACE);
 
 const world = new World(STATE_PATH, LOG_PATH, TRANSCRIPT_ROOT, SCOPE);
 await world.load();
+
+/**
+ * The public view, if there is one. Set both and every poll is reported to it; the cloud's
+ * answer carries the pins made there and whether anyone is watching. The host name is what
+ * Superset calls this machine, learned on the first poll, and is what the key is issued to.
+ */
+let reporter = null;
+function reporterFor(hostName) {
+  if (reporter || !hostName) return reporter;
+  reporter = new Reporter({
+    url: process.env.AGENT_FLEET_PUSH_URL ?? '',
+    key: process.env.AGENT_FLEET_PUSH_KEY ?? '',
+    hostName,
+    world,
+  });
+  if (!reporter.enabled) return reporter;
+  // A pin that arrived from the cloud is a change the local pages should see now.
+  reporter.onPinsChanged = () => {
+    latest = { ...latest, hubIds: world.hubIds, pins: [...world.pins] };
+    broadcast({ ...latest, events: [] });
+  };
+  return reporter;
+}
+
 const clients = new Set();
 let latest = {
   tick: 0,
@@ -170,12 +195,15 @@ async function pollForever() {
       if (history.length > EVENT_HISTORY) history.splice(0, history.length - EVENT_HISTORY);
       latest = snapshot;
       broadcast(snapshot);
+      const up = reporterFor(snapshot.hostName);
+      if (up?.enabled) await up.report(snapshot);
     } catch (err) {
       latest = { ...latest, error: err.message };
       broadcast({ ...latest, agents: latest.agents, events: [] });
     }
     // Measure from the start of the poll: a slow tick should not also add its own delay.
-    const interval = clients.size ? POLL_MS : IDLE_POLL_MS;
+    // Someone watching through the cloud is someone watching.
+    const interval = clients.size || reporter?.watched ? POLL_MS : IDLE_POLL_MS;
     const wait = Math.max(250, interval - (Date.now() - started));
     await new Promise((resolve) => {
       const timer = setTimeout(resolve, wait);
@@ -294,6 +322,9 @@ async function handle(request) {
         agents: latest.agents.length,
         watchers: clients.size,
         transport: transportNote(),
+        cloud: reporter?.enabled
+          ? { watchers: reporter.watchers, lastOkAt: reporter.lastOkAt, error: reporter.error }
+          : null,
       }),
     );
   }
@@ -313,6 +344,7 @@ async function handle(request) {
     const id = typeof body?.id === 'string' ? body.id : '';
     if (!id) return cors(request, Response.json({ ok: false, error: 'no id' }, { status: 400 }));
     const changed = world.pin(id, body.pinned !== false);
+    reporter?.pin(id, body.pinned !== false);
     if (changed) {
       latest = { ...latest, hubIds: world.hubIds, pins: [...world.pins] };
       broadcast({ ...latest, events: [] });
@@ -396,4 +428,6 @@ console.log(`  reading through: ${transportNote()}`);
 console.log(`  scope: ${SCOPE === 'host' ? 'this host only' : 'the whole fleet'}`);
 if (PEERS.length) console.log(`  merging with: ${PEERS.map(hideToken).join(', ')}`);
 if (TOKEN) console.log('  token required on /api');
+if (process.env.AGENT_FLEET_PUSH_URL && process.env.AGENT_FLEET_PUSH_KEY)
+  console.log(`  reporting to: ${process.env.AGENT_FLEET_PUSH_URL}`);
 pollForever();

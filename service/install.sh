@@ -2,8 +2,23 @@
 # Install Superset Agent Fleet as a login service: it starts when you log in to the Mac, is
 # restarted if it ever exits, and is simply always at http://localhost:4400.
 #
+# With a Doppler config the server runs under `doppler run`, which is where the cloud's
+# address and this machine's push key come from:
+#
+#   ./service/install.sh --doppler prd_macbook
+#
+# Without one it runs as before, reading this machine for its own page and reporting nowhere.
+#
 # Re-running this is safe: it replaces the job. `uninstall.sh` removes it.
 set -euo pipefail
+
+doppler_config=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --doppler) doppler_config="${2:-}"; shift 2 ;;
+    *) echo "install: unknown argument $1" >&2; exit 1 ;;
+  esac
+done
 
 label="ai.skriptr.superset-agent-fleet"
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -13,6 +28,19 @@ superset="$(command -v superset || true)"
 
 [[ -n "$bun" ]] || { echo "install: bun is not on PATH" >&2; exit 1; }
 [[ -n "$superset" ]] || { echo "install: the superset CLI is not on PATH" >&2; exit 1; }
+
+# launchd runs the job as you, so your `doppler login` is what it uses — unless DOPPLER_TOKEN
+# is set when this runs, in which case that token (a service token for just this config) is
+# written into the job instead, and the plist is made readable by you alone.
+doppler_args=""
+doppler_env=""
+if [[ -n "$doppler_config" ]]; then
+  doppler="$(command -v doppler || true)"
+  [[ -n "$doppler" ]] || { echo "install: the doppler CLI is not on PATH" >&2; exit 1; }
+  # One line: launchd does not mind, and sed does.
+  [[ -n "${DOPPLER_TOKEN:-}" ]] && doppler_env="<key>DOPPLER_TOKEN</key><string>$DOPPLER_TOKEN</string>"
+  doppler_args="<string>$doppler</string><string>run</string><string>-p</string><string>agent-fleet</string><string>-c</string><string>$doppler_config</string><string>--</string>"
+fi
 
 # The job's PATH: wherever bun and superset were found now, plus the usual places.
 path="$(dirname "$bun"):$(dirname "$superset"):/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
@@ -41,7 +69,9 @@ command -v superset-send >/dev/null || echo "  note: no install directory is on 
 
 mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
 sed -e "s|__BUN__|$bun|g" -e "s|__REPO__|$here|g" -e "s|__PATH__|$path|g" -e "s|__HOME__|$HOME|g" \
+  -e "s|__DOPPLER__|$doppler_args|g" -e "s|__DOPPLER_ENV__|$doppler_env|g" \
   "$here/service/$label.plist.template" > "$plist"
+chmod 600 "$plist"
 
 domain="gui/$(id -u)"
 # Replace any previous version of the job, and stop a hand-started server holding the port.

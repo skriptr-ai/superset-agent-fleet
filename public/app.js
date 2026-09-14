@@ -85,7 +85,7 @@ const hostChip = (agent) => {
   // `agent.remote` is what the REPORTING server thought, and with one instance per host every
   // server thinks all of its own rooms are local. Away-ness is a fact about the viewer, so it
   // is decided here against the host this page was served from.
-  const away = agent.hostName && homeHost && agent.hostName !== homeHost;
+  const away = agent.hostName && (cloudMode || (homeHost && agent.hostName !== homeHost));
   return away
     ? `<span class="chip host" title="on another machine">🖥 ${escape(short(agent.hostName, 22))}</span>`
     : '';
@@ -655,7 +655,11 @@ function streamUrl(peer, path) {
   return `${url.origin}${path}${token ? `?token=${encodeURIComponent(token)}` : ''}`;
 }
 
-const originOf = (peer) => (peer ? new URL(peer).host : 'this host');
+const originOf = (key) => {
+  if (!key) return cloudMode ? 'the cloud' : 'this host';
+  // A cloud stream keys its sources by machine name; a peer is a URL.
+  return /^https?:/.test(key) ? new URL(key).host : key;
+};
 
 /**
  * Fold every server's snapshot into one.
@@ -726,8 +730,11 @@ function redraw() {
   const world = merged();
   allAgents = world.agents;
   hubIds = world.hubIds;
-  // Pins are the home server's alone: that is the one the button posts to.
-  pins = new Set(sources.get('')?.pins ?? []);
+  // Pins are the home server's alone: that is the one the button posts to. In the cloud they
+  // are the cloud's, and every machine's snapshot carries the same set.
+  pins = new Set(
+    cloudMode ? [...sources.values()].flatMap((s) => s.pins ?? []) : (sources.get('')?.pins ?? []),
+  );
   links = world.links;
   renderProjects();
   applyFilter();
@@ -742,34 +749,66 @@ function redraw() {
   renderPanel();
 }
 
+/**
+ * Whether this page is the public one, fed by the cloud rather than by a server on a machine.
+ * Then no host is home — every room is away and says which machine it is on — and pins are
+ * the cloud's, the same on every snapshot, instead of the home server's alone.
+ */
+let cloudMode = false;
+
+/** How long a stream may be silent after an error before its rooms are taken down. */
+const STREAM_GRACE_MS = 8_000;
+
 function listen(peer) {
-  const key = peer ?? '';
+  const streamKey = peer ?? '';
   const source = new EventSource(streamUrl(peer, '/api/stream'));
+  /** The sources this stream has spoken for: one on a machine, one per machine in the cloud. */
+  const spoken = new Set();
+  let grace = null;
   source.onmessage = (message) => {
-    sourceTrouble.delete(key);
     const snapshot = JSON.parse(message.data);
+    // A cloud stream carries every machine, each snapshot naming its own; a machine's stream
+    // carries just that machine and names nothing.
+    const key = snapshot.sourceKey ?? streamKey;
+    spoken.add(key);
+    clearTimeout(grace);
+    grace = null;
+    sourceTrouble.delete(streamKey);
+    sourceTrouble.delete(key);
     // The server this page came from is home; every other host's rooms are away.
-    if (!peer && snapshot.hostName) homeHost = snapshot.hostName;
+    if (!peer && !cloudMode && snapshot.hostName) homeHost = snapshot.hostName;
     sources.set(key, snapshot);
     redraw();
   };
   source.onerror = () => {
-    // A host that has gone away must not take its rooms with it silently: the snapshot is
-    // dropped so the world stops claiming to know, and the reason is said out loud.
-    sources.delete(key);
-    sourceTrouble.set(key, 'not reachable — reconnecting');
-    redraw();
+    // A cloud function ends its stream on a clock and the browser reconnects at once, which
+    // is not a host going away; so a moment's grace before the rooms are taken down. A host
+    // that is really gone must not keep its rooms silently: the snapshots are dropped so the
+    // world stops claiming to know, and the reason is said out loud.
+    if (grace) return;
+    grace = setTimeout(() => {
+      for (const key of spoken) sources.delete(key);
+      sourceTrouble.set(streamKey, 'not reachable — reconnecting');
+      redraw();
+    }, STREAM_GRACE_MS);
   };
 }
 
 async function connect() {
-  listen(null);
   try {
     const res = await fetch('/api/peers');
-    const { peers } = await res.json();
+    if (res.status === 401) {
+      // The public page is behind a token; the door is where you give it.
+      location.href = '/api/login';
+      return;
+    }
+    const { peers, cloud } = await res.json();
+    cloudMode = cloud === true;
+    listen(null);
     for (const peer of peers ?? []) listen(peer);
   } catch {
     // No peer list is the normal single-host case, not a failure.
+    listen(null);
   }
 }
 
