@@ -3,8 +3,11 @@
 A Habbo-style pixel-art city block that shows your [Superset](https://superset.sh) agent fleet
 at work.
 
-**One restaurant, and it is your fleet.** The room has two halves and every session is in one
-of them.
+**One restaurant per developer, and it is their fleet.** The restaurants stand in a row along
+the same street, a side street between each pair, and the name over each door is the developer
+whose machines feed it. On your own machine there is one, and it is yours. On the public view
+there is one for everybody reporting, so a team sees each other's rooms side by side. Every
+room has two halves and every session is in one of them.
 
 **The bar is the orchestration.** It is an L: the long leg runs the length of the left wall with
 back-bar shelves behind it, and the short arm turns at the corner and runs along the back wall
@@ -18,8 +21,8 @@ a turn. Several orchestrators run at once, so the bar is divided into patches, o
 laid back to front in the order they were elected. A bar with nobody behind it is still a bar; it
 just stands there empty.
 
-**The dining room is yours.** The kitchen is a corner at the back right — small, because the bar
-took the rest — and the chef in it is the developer, you. Every session nobody is orchestrating is
+**The dining room is the developer's.** The kitchen is a corner at the back right — small,
+because the bar took the rest — and the chef in it is the developer whose name is over the door. Every session nobody is orchestrating is
 a customer at a table, waiting on you rather than on an agent. When you send one of them
 something, a waiter collects it at the pass and carries it out to that table; when one finishes a
 turn, a waiter brings the note back to the kitchen.
@@ -497,6 +500,58 @@ also remembered in `~/.superset/agent-fleet.json`, so a restart mid-run keeps th
 for a worker whose commands have scrolled away. Counts and threads are not saved: they are
 rebuilt from the screens, which are the only source of truth.
 
+## The public view
+
+The same picture, at one URL, of every machine at once: **https://superset-agent-fleet.vercel.app**.
+It is behind a token; `/api/login` is where you give it, and it stays in a cookie for a year.
+
+No Vercel function can read a terminal, so the cloud reads nothing. Each machine runs the
+server it runs anyway, scoped to itself, and **reports** every poll to `/api/push` with a key
+that is that machine's alone (`lib/report.js`). The cloud keeps the latest snapshot per machine
+and its recent events in the fleet's own Supabase project (`cloud/store.js`, `cloud/schema.sql`) and streams them to the page (`api/stream.js`)
+in the same shape a machine's own stream has, one snapshot per machine, so the page merges them
+with the code it already had. A poll whose world did not change is a heartbeat and stores
+nothing, so an idle fleet costs the store nothing.
+
+Pins made on the public page travel back to the machine that draws that session on its next
+report; pins made on a machine's own page travel up. The cloud's set is the one that counts.
+
+Secrets live in Doppler, project `agent-fleet`: `prd` holds what the cloud needs — the map of
+machine name to push key, and the view token — and `prd_<machine>` holds each machine's own key
+plus the address to report to. Install on a machine with its config and nothing else to set:
+
+```bash
+./service/install.sh --doppler prd_macbook          # macOS, as a login service
+./service/install-linux.sh prd_dev_vm               # Linux, as a systemd user service
+```
+
+On a Linux host nobody logs in to, put a Doppler service token for that config in
+`~/.config/superset-agent-fleet/doppler.env` as `DOPPLER_TOKEN=…` (mode 600) before installing.
+
+**Adding a machine**, yours or a teammate's:
+
+1. In Doppler, a new config `prd_<machine>` under `prd` with a fresh `AGENT_FLEET_PUSH_KEY`
+   (`openssl rand -hex 32`), and the same key added under a label of your choosing
+   (`jonas-mac`) in `prd`'s `AGENT_FLEET_PUSH_KEYS`. The label is not the machine's Superset
+   host name — nobody knows that until it reports. The first report binds the label to the
+   host name and the key is held to it from then on.
+2. Copy the map to Vercel and redeploy:
+   `vercel env add AGENT_FLEET_PUSH_KEYS production --force --value "$(doppler secrets get AGENT_FLEET_PUSH_KEYS --plain -p agent-fleet -c prd)" && vercel deploy --prod`.
+3. On the machine, with the Superset host running and `bun`, `superset` and `doppler` on PATH:
+   clone this repository and run the install above with that config. A teammate's Mac needs a
+   way to read its config: either they are a member of the Doppler project and have run
+   `doppler login`, or you make them a service token for just their config
+   (`doppler configs tokens create <name> -p agent-fleet -c prd_<machine> --plain`) and they
+   run the install with it in the environment: `DOPPLER_TOKEN=… ./service/install.sh --doppler prd_<machine>`.
+4. Give them the view token, once, over something private. It is the same for everyone.
+
+Revoking a machine is removing its label from the map and redeploying. Its config can stay.
+
+The cloud's own variables, in Vercel: `AGENT_FLEET_PUSH_KEYS`, `AGENT_FLEET_VIEW_TOKEN`,
+`SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`. Apply `cloud/schema.sql` once to the Supabase
+project (`supabase db push`, or paste it into the SQL editor). Deploy with `vercel deploy --prod`.
+`/api/health` says whether the cloud has its store.
+
 ## The service, in more detail
 
 `service/install.sh` writes a LaunchAgent to
@@ -538,6 +593,8 @@ service):
 | `AGENT_FLEET_TOKEN`                  | _unset_                         | Required on `/api` once set. Mandatory to bind beyond loopback          |
 | `AGENT_FLEET_SCOPE`                  | `fleet`                         | `host` reads only this machine, leaving the rest to their own instances |
 | `AGENT_FLEET_PEERS`                  | _unset_                         | Other hosts' instances, comma-separated, merged in the browser          |
+| `AGENT_FLEET_PUSH_URL`               | _unset_                         | The public view's `/api/push`; with a key, every poll is reported there |
+| `AGENT_FLEET_PUSH_KEY`               | _unset_                         | This machine's key for it, issued to its Superset host name             |
 | `AGENT_FLEET_POLL_MS`                | `2500`                          | Poll interval while a page is open                                      |
 | `AGENT_FLEET_IDLE_POLL_MS`           | `20000`                         | Poll interval with nobody watching                                      |
 | `AGENT_FLEET_STATE`                  | `~/.superset/agent-fleet.json`  | Where who-drives-whom is remembered; `''` to forget                     |
@@ -590,6 +647,9 @@ lib/transcripts.js            reads a Claude session's own record of the MCP cal
 lib/parse.js                  terminal screen -> status, model, last utterance, CLI calls
 lib/world.js                  the fleet as state, the per-tick diff that becomes events
 lib/weather.js                the forecast for the town, from api.met.no, kept and boiled down
+lib/report.js                 how a machine tells the public view about itself, and hears its pins back
+api/                          the public view's functions on Vercel: push, stream, login, pins, weather
+cloud/                        what those share: the Supabase store, its schema, and the two doors (push key, view token)
 public/daylight.js            where the sun is over the town, and the tone map that lights the night palette for it
 public/weather.js             what falls on the glass, the fog, the storm, and cloud shadows on the roofs
 public/draw.js                the room, the furniture and the people, as pixel art drawn from code
@@ -598,7 +658,7 @@ public/district.js            the one tile grid it all stands on: the bar, the t
 public/scene.js               who is behind the bar, who is seated, who is still in line; orders, pathfinding, the camera
 public/app.js                 SSE wiring, the project filter, the drawer with cards and threads
 docs/design/                  proposals not yet built; cross-host-visibility.md is the open one
-service/                      the launchd agent and its install/uninstall scripts
+service/                      the launchd agent, the systemd unit, and their install/uninstall scripts
 plugins/agent-fleet/          the skill that tells orchestrators to use the wrapper
 ```
 

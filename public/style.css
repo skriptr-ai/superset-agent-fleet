@@ -312,6 +312,28 @@ kbd {
 
 /* ── cards ────────────────────────────────────────────────────────────────────────────────── */
 
+/* One restaurant's heading: the developer's name, over its bar, tables and line. */
+#panel h2.house {
+  margin: 18px 0 0;
+  padding: 6px 0 4px;
+  border-top: 1px solid var(--line);
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+#panel h2.house:first-child {
+  margin-top: 4px;
+  border-top: 0;
+}
+
+#panel h2.house small {
+  margin-left: 6px;
+  color: var(--dim);
+  font-size: 10px;
+  font-weight: 500;
+}
+
 #panel h3 {
   margin: 12px 0 2px;
   font-size: 10.5px;

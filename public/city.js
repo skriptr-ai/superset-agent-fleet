@@ -261,7 +261,7 @@ function cityRowRoads(district, tiles) {
 function cityColRoads(district) {
   const { city } = district;
   const roads = [];
-  for (let i = -city.ring.side - 1; i <= city.ring.side; i++) {
+  for (let i = city.first - 1; i <= city.last; i++) {
     roads.push({ ...city.colRoad(i), i });
   }
   return roads;
@@ -270,7 +270,7 @@ function cityColRoads(district) {
 function cityColBands(district) {
   const { city } = district;
   const bands = [];
-  for (let i = -city.ring.side; i <= city.ring.side; i++) bands.push({ ...city.colBand(i), i });
+  for (let i = city.first; i <= city.last; i++) bands.push({ ...city.colBand(i), i });
   return bands;
 }
 
@@ -379,15 +379,16 @@ const blocks = new Map();
 
 /** The block at grid index (i, j), generated the first time it is asked for. */
 function blockAt(district, i, j) {
-  if (i === 0 && j === 0) return null; // the restaurant's own block
   const { city } = district;
-  if (Math.abs(i) > city.ring.side || j < 0 || j > city.ring.back) return null;
+  if (city.isHouse(i, j)) return null; // a restaurant's own block
+  if (i < city.first || i > city.last || j < 0 || j > city.ring.back) return null;
   const key = `${i},${j}`;
   let block = blocks.get(key);
-  if (block && block.hw === district.house.w && block.rd === district.houseDepth) return block;
+  // Cut to the district it was asked for: a different row of houses moves every block.
+  if (block && block.signature === district.signature) return block;
   const rect = { ...city.colBand(i), ...city.rowBand(j) };
   const buildings = lotsOf(rect, hash(`block${key}`)).map((lot) => makeBuilding(lot, key));
-  block = { i, j, rect, buildings, hw: district.house.w, rd: district.houseDepth };
+  block = { i, j, rect, buildings, signature: district.signature };
   blocks.set(key, block);
   return block;
 }
@@ -637,7 +638,7 @@ export function cityObjects(ctx, district, view, t) {
       return;
     items.push({ depth: propKey(x, y, buildings), draw: () => streetProp(ctx, { kind, x, y }, t) });
   };
-  for (let i = -city.ring.side - 1; i <= city.ring.side; i++) {
+  for (let i = city.first - 1; i <= city.last; i++) {
     const road = city.colRoad(i);
     for (const rb of rowBands) {
       const left = blockAt(district, i, rb.j)?.buildings ?? [];
@@ -646,8 +647,8 @@ export function cityObjects(ctx, district, view, t) {
       const y1 = Math.min(city.sideRoadEnd - 1, rb.y1 + CITY.pave - 1);
       for (let y = y0; y <= y1; y++) {
         if (city.isRoadRow(y)) continue;
-        // The restaurant's own right-hand wall end: nothing tall against it.
-        if (i === 0 && rb.j === 0 && y < 4) continue;
+        // A restaurant's wall end on either side of this street: nothing tall against it.
+        if (rb.j === 0 && (city.isHouse(i, 0) || city.isHouse(i + 1, 0)) && y < 4) continue;
         if (mod(y, 8) === 4) {
           propAt('lamp', road.x0 - 1, y, left);
           propAt('lamp', road.x1, y, right);

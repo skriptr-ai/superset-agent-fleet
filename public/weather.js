@@ -25,16 +25,21 @@ function falling(weather, kind) {
 }
 
 /**
- * Clip to the whole glass except `shelter`, a polygon in screen pixels. Even-odd fill makes the
- * polygon a hole in the rectangle, whichever way round its points run.
+ * Clip to the whole glass except `shelter`: a polygon in screen pixels, or several of them, one
+ * per roofless room. Even-odd fill makes each polygon a hole in the rectangle, whichever way
+ * round its points run.
  */
 function clipOutside(ctx, cw, ch, shelter) {
-  if (!shelter || shelter.length < 3) return;
+  if (!shelter || !shelter.length) return;
+  const polygons = Array.isArray(shelter[0]) ? shelter : [shelter];
   ctx.beginPath();
   ctx.rect(0, 0, cw, ch);
-  ctx.moveTo(shelter[0].x, shelter[0].y);
-  for (let i = 1; i < shelter.length; i++) ctx.lineTo(shelter[i].x, shelter[i].y);
-  ctx.closePath();
+  for (const polygon of polygons) {
+    if (polygon.length < 3) continue;
+    ctx.moveTo(polygon[0].x, polygon[0].y);
+    for (let i = 1; i < polygon.length; i++) ctx.lineTo(polygon[i].x, polygon[i].y);
+    ctx.closePath();
+  }
   ctx.clip('evenodd');
 }
 
