@@ -543,10 +543,10 @@ bin/fleet-add-developer jonas "Jonas"
 ```
 
 That makes the config `prd_jonas` with the key and the name, and adds the key to the cloud's
-map. The cloud reads the map from Vercel; Doppler's Vercel integration (set up once, in the
-Doppler dashboard, syncing `prd` to the project's production environment with redeploy on)
-carries it there. Without the sync, someone with Vercel access runs the command in the script's
-header.
+map. The cloud reads the map from Vercel, and Doppler's Vercel integration syncs `prd` to the
+project's production environment and redeploys it whenever `prd` changes, so nothing else is
+needed. Should the sync ever be off, someone with Vercel access runs the command in the
+script's header.
 
 Then, on each of that developer's machines — Mac or VM — with the Superset host running and
 `bun`, `superset` and `doppler` on PATH:

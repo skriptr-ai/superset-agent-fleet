@@ -32,9 +32,9 @@ address, and adds your key to the cloud's key map. Re-running it is safe and kee
 
 If it says your slug is already in the map, someone did this for you; carry on.
 
-**The cloud has to learn the new map.** Doppler syncs it to Vercel and redeploys when the
-team's Doppler → Vercel integration is on. If your first report answers `401` in step 4, the
-sync is not on: ask someone with Vercel access to run the command in the header of
+**The cloud learns the new map on its own.** Doppler syncs `prd` to Vercel and redeploys the
+cloud when it changes, which takes a minute or two. If your first report still answers `401`
+in step 4 after that, ask someone with Vercel access to run the command in the header of
 `bin/fleet-add-developer`.
 
 ## Step 2 — your Mac
