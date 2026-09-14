@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# Give a developer a key to the public fleet view, in Doppler: one key for all their machines.
+#
+#   bin/fleet-add-developer <slug> "<Name>"        e.g. bin/fleet-add-developer jonas "Jonas"
+#
+# Makes the config `prd_<slug>` under `prd` in the `agent-fleet` project, with the key, the
+# name over their door and the address to report to; and adds the key under `<slug>` in the
+# cloud's key map, `prd`'s AGENT_FLEET_PUSH_KEYS. Re-running it keeps the existing key.
+#
+# The cloud reads the map from Vercel, which Doppler's Vercel integration keeps in sync and
+# redeploys; without that sync, someone with Vercel access runs
+#   vercel env add AGENT_FLEET_PUSH_KEYS production --force --value "$(doppler secrets get AGENT_FLEET_PUSH_KEYS --plain -p agent-fleet -c prd)" && vercel deploy --prod
+#
+# Then, on each of the developer's machines: clone this repository and
+#   ./service/install.sh --doppler prd_<slug>          (macOS)
+#   ./service/install-linux.sh prd_<slug>              (Linux)
+set -euo pipefail
+
+slug="${1:-}"
+name="${2:-}"
+[[ "$slug" =~ ^[a-z][a-z0-9-]*$ && -n "$name" ]] || {
+  echo "usage: $0 <slug> \"<Name>\"   (slug: lowercase letters, digits, dashes)" >&2
+  exit 1
+}
+project=agent-fleet
+config="prd_$slug"
+
+# The config, if it is not there yet.
+if ! doppler configs get "$config" -p "$project" >/dev/null 2>&1; then
+  doppler configs create "$config" -p "$project" -e prd >/dev/null
+  echo "created config $config"
+fi
+
+# The key: kept if one exists, so a re-run cannot lock out a machine already reporting.
+key="$(doppler secrets get AGENT_FLEET_PUSH_KEY --plain -p "$project" -c "$config" 2>/dev/null || true)"
+if [[ -z "$key" ]]; then
+  key="$(openssl rand -hex 32)"
+  echo "minted a key for $slug"
+fi
+doppler secrets set -p "$project" -c "$config" --silent \
+  AGENT_FLEET_PUSH_KEY="$key" AGENT_FLEET_OWNER="$name"
+
+# Into the cloud's map, under the slug, with the name over the door.
+map="$(doppler secrets get AGENT_FLEET_PUSH_KEYS --plain -p "$project" -c prd)"
+map="$(jq -c --arg s "$slug" --arg k "$key" --arg n "$name" '. + {($s): {key: $k, owner: $n}}' <<<"$map")"
+doppler secrets set -p "$project" -c prd --silent AGENT_FLEET_PUSH_KEYS="$map"
+echo "$name is in the key map as '$slug'; their machines use: --doppler $config"

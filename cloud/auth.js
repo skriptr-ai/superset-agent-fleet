@@ -7,13 +7,13 @@
 // a leaked view token can write nothing but a pin.
 //
 // Both live in Doppler and reach here as environment variables: AGENT_FLEET_PUSH_KEYS is a
-// JSON map of machine label to key — or to `{key, owner}`, where owner is the developer whose
-// restaurant that machine's sessions fill; a bare key means the label is the owner —
-// and AGENT_FLEET_VIEW_TOKEN the one word that opens the page.
+// JSON map of label to key — or to `{key, owner}`, where owner is the developer whose
+// restaurant the sessions fill; a bare key means the label is the owner — and
+// AGENT_FLEET_VIEW_TOKEN the one word that opens the page.
 //
-// The label is ours ("jonas-mac"), not Superset's name for the machine, which nobody knows
-// until it reports. The store binds label to host name on the first report and holds the
-// key to that name afterwards, so a key issued to one machine cannot speak for another.
+// A label is a developer ("jonas"), and one key serves all of that developer's machines: the
+// store binds each host name to the label that first reported it, so a key cannot speak for
+// a machine another developer's key already reported.
 
 import { timingSafeEqual } from 'node:crypto';
 

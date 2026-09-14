@@ -7,7 +7,8 @@
 
 create table if not exists fleet_hosts (
   name        text primary key,
-  -- The label of the key that first reported this machine; no other key may report it.
+  -- The label of the key that first reported this machine; no other key may report it. One
+  -- developer's key reports all of that developer's machines under the same label.
   label       text,
   -- The developer whose restaurant this machine's sessions fill, as the key map says.
   owner       text,
@@ -84,13 +85,11 @@ declare
   v_pins    jsonb;
   v_watch   int;
 begin
+  -- A host is bound to the key that first reported it; a key may report as many hosts as its
+  -- developer has machines, but never as a host another developer's key already reported.
   select true, label into v_known, v_label from fleet_hosts where name = p_host;
   v_known := coalesce(v_known, false);
   if v_known and v_label is not null and v_label <> p_label then
-    raise exception 'key_bound_elsewhere';
-  end if;
-  -- One label, one machine: a key that has reported as one host may not turn up as another.
-  if exists(select 1 from fleet_hosts where label = p_label and name <> p_host) then
     raise exception 'key_bound_elsewhere';
   end if;
 

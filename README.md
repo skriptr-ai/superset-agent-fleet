@@ -528,24 +528,46 @@ plus the address to report to. Install on a machine with its config and nothing 
 On a Linux host nobody logs in to, put a Doppler service token for that config in
 `~/.config/superset-agent-fleet/doppler.env` as `DOPPLER_TOKEN=…` (mode 600) before installing.
 
-**Adding a machine**, yours or a teammate's:
+**Joining, as a teammate.** The whole setup — key, Mac, VMs, checks — is one document written
+to be handed to an agent: [docs/join-the-fleet.md](docs/join-the-fleet.md). Tell yours:
 
-1. In Doppler, a new config `prd_<machine>` under `prd` with a fresh `AGENT_FLEET_PUSH_KEY`
-   (`openssl rand -hex 32`), and the same key added under a label of your choosing
-   (`jonas-mac`) in `prd`'s `AGENT_FLEET_PUSH_KEYS`. The label is not the machine's Superset
-   host name — nobody knows that until it reports. The first report binds the label to the
-   host name and the key is held to it from then on.
-2. Copy the map to Vercel and redeploy:
-   `vercel env add AGENT_FLEET_PUSH_KEYS production --force --value "$(doppler secrets get AGENT_FLEET_PUSH_KEYS --plain -p agent-fleet -c prd)" && vercel deploy --prod`.
-3. On the machine, with the Superset host running and `bun`, `superset` and `doppler` on PATH:
-   clone this repository and run the install above with that config. A teammate's Mac needs a
-   way to read its config: either they are a member of the Doppler project and have run
-   `doppler login`, or you make them a service token for just their config
-   (`doppler configs tokens create <name> -p agent-fleet -c prd_<machine> --plain`) and they
-   run the install with it in the environment: `DOPPLER_TOKEN=… ./service/install.sh --doppler prd_<machine>`.
-4. Give them the view token, once, over something private. It is the same for everyone.
+> Read `docs/join-the-fleet.md` in the superset-agent-fleet repo and set me up on this machine.
 
-Revoking a machine is removing its label from the map and redeploying. Its config can stay.
+What follows is the same thing in short.
+
+**Adding a developer.** One key per developer, for all of their machines, and their name over
+their door. Anyone with access to the Doppler project can do it:
+
+```bash
+bin/fleet-add-developer jonas "Jonas"
+```
+
+That makes the config `prd_jonas` with the key and the name, and adds the key to the cloud's
+map. The cloud reads the map from Vercel; Doppler's Vercel integration (set up once, in the
+Doppler dashboard, syncing `prd` to the project's production environment with redeploy on)
+carries it there. Without the sync, someone with Vercel access runs the command in the script's
+header.
+
+Then, on each of that developer's machines — Mac or VM — with the Superset host running and
+`bun`, `superset` and `doppler` on PATH:
+
+```bash
+git clone git@github.com:skriptr-ai/superset-agent-fleet.git ~/Projects/superset-agent-fleet
+cd ~/Projects/superset-agent-fleet
+./service/install.sh --doppler prd_jonas          # macOS
+./service/install-linux.sh prd_jonas              # Linux
+```
+
+The machine needs a way to read its config: `doppler login` on a Mac, or on a VM nobody logs
+in to, a service token for just that config (`doppler configs tokens create <name> -p agent-fleet -c prd_jonas --plain`)
+in `~/.config/superset-agent-fleet/doppler.env` as `DOPPLER_TOKEN=…`, mode 600, before
+installing. Each machine's restaurant appears in that developer's room on its first report;
+the label is bound to the machine's host name then, and no other developer's key can report
+as it afterwards.
+
+The view token is the same for everyone:
+`doppler secrets get AGENT_FLEET_VIEW_TOKEN --plain -p agent-fleet -c prd`. Give it once,
+over something private. Revoking a developer is removing their entry from the map.
 
 The cloud's own variables, in Vercel: `AGENT_FLEET_PUSH_KEYS`, `AGENT_FLEET_VIEW_TOKEN`,
 `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`. Apply `cloud/schema.sql` once to the Supabase
