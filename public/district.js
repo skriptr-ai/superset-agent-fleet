@@ -79,6 +79,17 @@ const BAR_TO_ROPE = 2;
 /** Fewer tables than this and the dining room reads as a corridor rather than a restaurant. */
 const MIN_TABLE_COLS = 3;
 
+/**
+ * The fun corner: floor a room only gets if it asks for one.
+ *
+ * It is extra WIDTH rather than a reallocation of the dining room, because the tables are laid
+ * from FLOOR_X outward at a fixed pitch — taking the corner out of the existing floor would
+ * either sit it on top of a table or shrink the room that asked for it. Six tiles is two poles
+ * with standing room around them and a tile of air against each wall.
+ */
+export const FUN_W = 6;
+export const FUN_D = 4;
+
 // ── the street, as bands of rows below the restaurant's frontage ──────────────────────────────
 
 export const WALK_ROWS = 2; // pavement outside the door
@@ -259,7 +270,7 @@ export function buildDistrict({ houses = [], house = null } = {}) {
   let ox = 0;
   for (const s of sized) {
     const cols = Math.max(MIN_TABLE_COLS, Math.ceil(s.party / rows));
-    const hw = FLOOR_X + cols * TABLE_GAP + 3;
+    const hw = FLOOR_X + cols * TABLE_GAP + 3 + (s.spec.fun ? FUN_W : 0);
     plans.push(planHouse({ ...s.spec, cols, rows, bar: s.patches }, ox, hw, lobbyY, rd));
     ox += hw + STREET_W;
   }
@@ -403,6 +414,41 @@ function planHouse(spec, ox, w, lobbyY, rd) {
     host: { x: entranceX - 1, y: lobbyY + 1 },
     door: { x: entranceX, y: rd - 1 },
     step: { x: entranceX, y: rd }, // the pavement tile the door opens onto
+    fun: planFun(spec, ox, w, lobbyY),
+  };
+}
+
+/**
+ * The fun corner, front-right: as far from the kitchen as the room goes, and beside the rope
+ * line so the queue can see in. Two poles on a stage, with the row in front of it left clear
+ * as standing room — that row is where the watchers go, and it is deliberately NOT part of the
+ * stage, so it stays walkable and the crowd can be drawn as people rather than as furniture.
+ */
+function planFun(spec, ox, w, lobbyY) {
+  if (!spec.fun) return null;
+  const x1 = ox + w - 2; // a tile of air against the right wall
+  const x0 = x1 - (FUN_W - 2);
+  const y1 = lobbyY - 2; // clear of the rope line, with the watchers' row below
+  const y0 = y1 - (FUN_D - 1);
+  const midY = y0 + 1;
+  return {
+    x0,
+    y0,
+    x1,
+    y1,
+    // The left pole stands a little forward of its partner rather than square with it: in this
+    // projection +y carries a thing down AND to the left at once, so one step of it moves the
+    // pair off a straight line without either leaving the boards.
+    poles: [
+      { x: x0 + 0.75, y: midY + 1 },
+      { x: x1 - 1, y: midY },
+    ],
+    // Facing the stage from the open floor in front of it.
+    watchers: [
+      { x: x0, y: y1 + 1 },
+      { x: x0 + 2, y: y1 + 1 },
+      { x: x1 - 1, y: y1 + 1 },
+    ],
   };
 }
 
@@ -523,6 +569,12 @@ function blockHouse(plan, rd, block, blocked, blockedStaff) {
   block(chef.x - 1, chef.y);
   block(chef.x, chef.y);
   block(station.x, station.y);
+
+  if (plan.fun) {
+    for (let x = plan.fun.x0; x <= plan.fun.x1; x++) {
+      for (let y = plan.fun.y0; y <= plan.fun.y1; y++) block(x, y);
+    }
+  }
 
   // The bar, an L down the left wall and along the back. Behind it is the bartenders' own lane
   // and nobody else's — a guest may not get behind a bar, but the kitchen staff share it, which

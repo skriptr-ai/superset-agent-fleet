@@ -31,6 +31,11 @@ import {
   counter,
   stove,
   plant,
+  poleDancer,
+  stageTile,
+  stageMoney,
+  stageGlow,
+  funSign,
   serviceBell,
   ropePost,
   hostStand,
@@ -71,6 +76,7 @@ import {
   KITCHEN_ROWS,
   FLOOR_X,
   FIRST_TABLE_Y,
+  TABLE_GAP,
   ENTRANCE_X,
   HOUSE_WALL_H,
 } from './district.js';
@@ -85,6 +91,13 @@ import {
 import { drawCityGround, cityObjects, cityStreetProps, drawQuay } from './city.js';
 import { Lighting, lightAt, pinnedTime, DEFAULT_PLACE } from './daylight.js';
 import { drawWeather, drawCloudShadows } from './weather.js';
+
+/**
+ * Whose dining room has a pole in it, by the name over the door, lowercased. The whole fleet
+ * can see every restaurant, so this is deliberately per-room rather than a global switch: it
+ * decorates the one room its owner asked for and leaves everyone else's alone.
+ */
+const POLE_ROOMS = new Set(['jonas']);
 
 const WALL_H = HOUSE_WALL_H;
 /**
@@ -447,6 +460,7 @@ export class Scene {
         name: shape.name,
         seats: shape.seats,
         bar: shape.barSpec,
+        fun: POLE_ROOMS.has((shape.name ?? '').toLowerCase()),
       })),
     });
     this.district = district;
@@ -1496,6 +1510,42 @@ export class Scene {
     return room.orders.length > 0 || room.waiters.some((wt) => wt.task);
   }
 
+  /**
+   * The fun corner: a lit stage in the front-right of the room, its poles, and the few people
+   * watching from the floor in front of it.
+   *
+   * The spill goes down before the boards so the light reads as thrown ONTO the floor, and the
+   * watchers are drawn into the same depth-sorted list as everyone else, so a waiter crossing
+   * behind them sorts correctly rather than always winning or always losing.
+   */
+  #drawFunCorner(b, t, fun, add) {
+    const cx = (fun.x0 + fun.x1) / 2 + 0.5;
+    // Notes land where they were thrown from. One tile from a watcher is thick, four is bare,
+    // which puts the money along the front lip of the stage and leaves the back of it clean.
+    const nearWatcher = (x, y) => {
+      const d = Math.min(...fun.watchers.map((w) => Math.hypot(w.x - x, w.y - y)));
+      return Math.max(0, Math.min(1, 1 - (d - 1) / 3));
+    };
+    stageGlow(b, cx, fun.y1 + 1.5, t);
+    for (let x = fun.x0; x <= fun.x1; x++) {
+      for (let y = fun.y0; y <= fun.y1; y++) {
+        add(x, y, 1, () => stageTile(b, x, y));
+        // Just above the boards and below everyone on them, so a dancer covers a note.
+        const thrown = nearWatcher(x, y);
+        add(x, y, 2, () => stageMoney(b, x, y, thrown));
+      }
+    }
+    fun.poles.forEach((pole, i) =>
+      add(pole.x, pole.y, 5, () => poleDancer(b, pole.x, pole.y, t, i)),
+    );
+    fun.watchers.forEach((seat, i) =>
+      add(seat.x, seat.y, 5, () =>
+        figure(b, seat.x, seat.y, dinerPalette(`watcher-${i}`), { facing: 'back' }),
+      ),
+    );
+    add(fun.x1, fun.y0, 9, () => funSign(b, fun.x0, fun.x1, fun.y0, t));
+  }
+
   /** One restaurant, with everyone in it. */
   #drawInside(b, t, byId, room) {
     const plan = room.plan;
@@ -1575,6 +1625,8 @@ export class Scene {
     add(host.x, host.y, 5, () => this.#drawHost(b, t, room));
     add(ox + w - 1, lobbyY + 1, 5, () => plant(b, ox + w - 1, lobbyY + 1));
     add(ox + FLOOR_X, KITCHEN_ROWS + 1, 5, () => plant(b, ox + FLOOR_X, KITCHEN_ROWS + 1));
+
+    if (plan.fun) this.#drawFunCorner(b, t, plan.fun, add);
 
     // ── everybody with a place in it ───────────────────────────────────────────────────────
     // The dining room is laid whether or not anybody is eating in it: an empty restaurant is a

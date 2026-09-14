@@ -934,17 +934,30 @@ export function figure(
   x,
   y,
   pal,
-  { facing = 'front', flip = false, step = 0, z = 0, hat = null, style = null } = {},
+  {
+    facing = 'front',
+    flip = false,
+    step = 0,
+    z = 0,
+    hat = null,
+    style = null,
+    maps = null,
+    shadow = true,
+  } = {},
 ) {
   const p = iso(x + 0.5, y + 0.5, z);
   const left = p.x - Math.floor(FIGURE_W / 2);
   const top = p.y - FIGURE_H + 2;
-  const map = facing === 'back' ? BACK : FRONT;
-  // Shadow
-  ctx.fillStyle = 'rgba(0,0,0,0.25)';
-  ctx.beginPath();
-  ctx.ellipse(p.x, p.y + 1, 8, 4, 0, 0, Math.PI * 2);
-  ctx.fill();
+  const source = maps ?? { front: FRONT, back: BACK };
+  const map = facing === 'back' ? source.back : source.front;
+  // Shadow. Anyone drawn tipped or inverted turns this off and casts its own on the ground,
+  // or the shadow tips with the body and ends up over its head.
+  if (shadow) {
+    ctx.fillStyle = 'rgba(0,0,0,0.25)';
+    ctx.beginPath();
+    ctx.ellipse(p.x, p.y + 1, 8, 4, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
 
   if (step === 0) {
     blitMap(ctx, map, left, top, pal, flip);
@@ -1008,6 +1021,14 @@ export function waiterPalette(index) {
   const hair = HAIRS[(index * 3 + 1) % HAIRS.length];
   const skin = SKINS[(index * 2) % SKINS.length];
   return palette({ body: C.black, trim: '#3d3d46', hair, skin, pants: '#26262b' });
+}
+
+/** A dancer: one bright tone for the two-piece, so a figure on a pole reads apart from a diner. */
+export function dancerPalette(index) {
+  const hair = HAIRS[(index * 5 + 2) % HAIRS.length];
+  const skin = SKINS[(index * 3 + 1) % SKINS.length];
+  const body = ['#e0407a', '#9b59d0', '#e8a33d'][index % 3];
+  return palette({ body, trim: body, hair, skin, pants: body });
 }
 
 export function hostPalette() {
@@ -1247,4 +1268,346 @@ export function wrapText(ctx, text, maxWidth, maxLines) {
     lines[maxLines - 1] = `${last.slice(0, Math.max(0, last.length - 2))}…`;
   }
   return lines;
+}
+
+// ── the fun corner ───────────────────────────────────────────────────────────────────────────
+
+/** Floor to well above head height: the pole is the tallest thing in the room bar the walls. */
+const POLE_H = 52;
+export const STAGE_H = 7;
+
+/**
+ * A two-piece, cut from the standard body.
+ *
+ * The palette gives one colour per character, so a torso cannot be part skin and part costume
+ * by recolouring alone — the sprite itself has to change. Rather than redraw a figure by hand
+ * and have it drift from the one everybody else uses, this takes the shared map and turns the
+ * torso and legs to skin, keeping the body colour only on the two rows that are the top and
+ * the two that are the briefs. Widths and row counts are untouched, so the stride-splitting in
+ * figure() still lands where it expects to.
+ */
+const TOP_ROWS = [15, 16];
+const BRIEF_ROWS = [21, 22];
+const SKIN_ROWS = { from: 13, to: 25 };
+
+const twoPiece = (map) =>
+  map.map((row, i) => {
+    if (i < SKIN_ROWS.from || i > SKIN_ROWS.to) return row;
+    if (TOP_ROWS.includes(i) || BRIEF_ROWS.includes(i)) return row;
+    return row.replace(/[btp]/g, 's');
+  });
+
+const DANCER_MAPS = { front: twoPiece(FRONT), back: twoPiece(BACK) };
+
+/**
+ * A folded-leg body for the floor pose. Twenty-three rows rather than twenty-seven, so it is
+ * visibly lower than the standing one; figure() measures from a fixed FIGURE_H, which would
+ * leave it hanging four pixels clear of the boards, so poleDancer drops the z to match.
+ */
+const FLOOR_LEGS = ['....kppppppk..', '..ksssssssssk.', '..kooookoookk.'];
+const DANCER_FLOOR = {
+  front: [...DANCER_MAPS.front.slice(0, 20), ...FLOOR_LEGS],
+  back: [...DANCER_MAPS.back.slice(0, 20), ...FLOOR_LEGS],
+};
+const FLOOR_DROP = FIGURE_H - DANCER_FLOOR.front.length;
+
+/**
+ * The routine.
+ *
+ * Everything is one continuous curve rather than a set of phases that hand over to each other.
+ * The angle advances monotonically for the whole cycle, so the dancer never stops turning and
+ * the front/back swap always lands edge-on; height, how far out they swing, and how far they
+ * are tipped are keyframed and eased BETWEEN those keys, so no value ever jumps at a boundary.
+ */
+const CYCLE_MS = 3600;
+const TURNS = 3;
+
+/** Smoothstep between keyframes: [fraction, value] pairs, in order. */
+function track(k, stops) {
+  for (let i = 1; i < stops.length; i++) {
+    const [t1, v1] = stops[i];
+    if (k > t1 && i < stops.length - 1) continue;
+    const [t0, v0] = stops[i - 1];
+    const span = t1 - t0 || 1;
+    const u = Math.min(1, Math.max(0, (k - t0) / span));
+    return v0 + (v1 - v0) * (u * u * (3 - 2 * u));
+  }
+  return stops[stops.length - 1][1];
+}
+
+// Height above the boards: climb, hold at the top through the inversion, slide down, rest.
+const Z_TRACK = [
+  [0, 4],
+  [0.34, 20],
+  [0.46, 26],
+  [0.7, 26],
+  [0.84, 2],
+  [0.94, 2],
+  [1, 4],
+];
+// How far out from the pole they swing — tucked in tight while inverted.
+const R_TRACK = [
+  [0, 0.34],
+  [0.4, 0.3],
+  [0.5, 0.12],
+  [0.68, 0.12],
+  [0.8, 0.26],
+  [1, 0.34],
+];
+// Radians of tip. Rotating into the inversion rather than mirroring into it is what stops it
+// reading as a sprite being flipped.
+const TILT_TRACK = [
+  [0, 0],
+  [0.46, 0],
+  [0.54, Math.PI],
+  [0.68, Math.PI],
+  [0.76, 0],
+  [1, 0],
+];
+
+/**
+ * A pole and whoever is working it.
+ *
+ * The dancer circles the pole rather than animating in place: the angle drives a horizontal
+ * offset, so the figure crosses in front of the pole and back behind it, and the draw order
+ * swaps at the halfway point so the pole actually occludes them on the far side. That one
+ * detail is what sells a flat sprite as going round something.
+ */
+export function poleDancer(ctx, x, y, t, index = 0) {
+  const k = (((t / CYCLE_MS + index * 0.37) % 1) + 1) % 1;
+  const angle = k * Math.PI * 2 * TURNS;
+  const sway = Math.sin(angle) * track(k, R_TRACK);
+  const behind = Math.cos(angle) < 0;
+  const z = STAGE_H + track(k, Z_TRACK);
+  const tilt = track(k, TILT_TRACK);
+  const onFloor = k > 0.84 && k < 0.94;
+  const maps = onFloor ? DANCER_FLOOR : DANCER_MAPS;
+  const base = iso(x + 0.5, y + 0.5, STAGE_H);
+
+  const drawPole = () => {
+    px(ctx, base.x - 1, base.y - POLE_H, '#8e97a3', 3, POLE_H);
+    px(ctx, base.x, base.y - POLE_H, '#e8eef5', 1, POLE_H);
+    px(ctx, base.x - 2, base.y - POLE_H, '#cfd6de', 5, 2);
+    px(ctx, base.x - 2, base.y - 2, '#cfd6de', 5, 2);
+  };
+
+  const drawDancer = () => {
+    // One shadow, on the boards, tightening as they climb — never attached to the body, so it
+    // cannot tip with it.
+    const lift = (z - STAGE_H) / 26;
+    const shade = iso(x + 0.5 + sway, y + 0.5, STAGE_H);
+    ctx.save();
+    ctx.fillStyle = `rgba(0,0,0,${0.26 - lift * 0.16})`;
+    ctx.beginPath();
+    ctx.ellipse(shade.x, shade.y + 1, 8 - lift * 3, 4 - lift * 1.6, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+
+    const opts = {
+      facing: behind ? 'back' : 'front',
+      flip: sway < 0,
+      maps,
+      z: onFloor ? z - FLOOR_DROP : z,
+      shadow: false,
+    };
+    if (tilt < 0.01) {
+      figure(ctx, x + sway, y, dancerPalette(index), opts);
+      return;
+    }
+    // Tipped about the figure's own middle, so it turns over from where its hands are rather
+    // than pivoting on its feet.
+    const pivot = iso(x + 0.5 + sway, y + 0.5, z + FIGURE_H / 2);
+    ctx.save();
+    ctx.translate(pivot.x, pivot.y);
+    ctx.rotate(tilt);
+    ctx.translate(-pivot.x, -pivot.y);
+    figure(ctx, x + sway, y, dancerPalette(index), opts);
+    ctx.restore();
+  };
+
+  if (behind) {
+    drawDancer();
+    drawPole();
+  } else {
+    drawPole();
+    drawDancer();
+  }
+}
+
+/**
+ * One tile of the stage: dark boards and the lip that gives them height.
+ *
+ * The three faces isoBox draws are shaded apart from each other, which is what makes the
+ * platform read as raised — it needs no drawn edge on top of that.
+ */
+export function stageTile(ctx, x, y) {
+  // A checked dancefloor: the tone alternates with the tile, so the pattern comes out of the
+  // grid the room is already built on rather than being drawn across it.
+  const dark = (x + y) % 2 === 0;
+  isoBox(ctx, x, y, 1, 1, STAGE_H, dark ? '#251830' : '#33243f', '#1d1324', '#160e1c');
+
+  // An inlaid diamond on each square, and a sheen off the back corner: enough to catch the
+  // light the corner throws without competing with anything standing on it.
+  const c = (dx, dy) => iso(x + dx, y + dy, STAGE_H);
+  const inlay = (inset, fill) => {
+    const pts = [c(0.5, inset), c(1 - inset, 0.5), c(0.5, 1 - inset), c(inset, 0.5)];
+    ctx.fillStyle = fill;
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x, pts[0].y);
+    for (const q of pts.slice(1)) ctx.lineTo(q.x, q.y);
+    ctx.closePath();
+    ctx.fill();
+  };
+  inlay(0.28, dark ? '#2f2039' : '#3b2b48');
+  ctx.save();
+  ctx.globalAlpha = 0.5;
+  inlay(0.4, dark ? '#3a2848' : '#48345a');
+  ctx.restore();
+}
+
+/**
+ * The spill a stage throws onto the floor around it. Drawn flat on the boards before anything
+ * standing on them, so people occlude the light rather than glowing through it.
+ */
+export function stageGlow(ctx, cx, cy, t) {
+  const p = iso(cx, cy, 0);
+  const pulse = 0.72 + 0.28 * Math.sin(t / 900);
+  for (const [dx, radius, color] of [
+    [-34, 56, 'rgba(224,64,122,0.20)'],
+    [34, 56, 'rgba(125,75,208,0.20)'],
+    [0, 78, 'rgba(255,190,90,0.10)'],
+  ]) {
+    const g = ctx.createRadialGradient(p.x + dx, p.y, 0, p.x + dx, p.y, radius);
+    g.addColorStop(0, color);
+    g.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.save();
+    ctx.globalAlpha = pulse;
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.ellipse(p.x + dx, p.y, radius, radius / 2, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
+/**
+ * The sign over the corner: a board on two posts, standing on the boards at the back of the
+ * stage. It is raked along the same axis as the stage's back edge — text sheared to match —
+ * so it sits in the room rather than hovering in screen space the way a label would.
+ */
+export function funSign(ctx, x0, x1, y, t) {
+  const left = iso(x0, y, STAGE_H);
+  const right = iso(x1 + 1, y, STAGE_H);
+  const postH = 30;
+  const panelH = 16;
+  const lit = Math.sin(t / 700) > -0.92;
+
+  ctx.fillStyle = '#2a1d33';
+  ctx.fillRect(left.x, left.y - postH, 2, postH);
+  ctx.fillRect(right.x - 2, right.y - postH, 2, postH);
+
+  // The panel, as a parallelogram between the two posts.
+  const top = (p) => p.y - postH - panelH;
+  const quad = (inset, fill) => {
+    ctx.fillStyle = fill;
+    ctx.beginPath();
+    ctx.moveTo(left.x + inset, top(left) + inset);
+    ctx.lineTo(right.x - inset, top(right) + inset);
+    ctx.lineTo(right.x - inset, right.y - postH - inset);
+    ctx.lineTo(left.x + inset, left.y - postH - inset);
+    ctx.closePath();
+    ctx.fill();
+  };
+  quad(0, '#1d1324');
+  quad(2, lit ? '#2f1b3d' : '#241629');
+
+  // Sheared to the iso rake: one tile right is half a tile down, so the text leans with it.
+  const rake = (right.y - left.y) / (right.x - left.x || 1);
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(left.x, top(left));
+  ctx.lineTo(right.x, top(right));
+  ctx.lineTo(right.x, right.y - postH);
+  ctx.lineTo(left.x, left.y - postH);
+  ctx.closePath();
+  ctx.clip();
+  ctx.translate(left.x, top(left));
+  ctx.transform(1, rake, 0, 1, 0, 0);
+  // Sized to the board rather than fixed: the panel is as wide as the stage, and the stage is
+  // as wide as the room was given, so the words have to fit whatever that came out as.
+  const label = 'The fun corner';
+  const span = right.x - left.x;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  let size = 9;
+  do {
+    ctx.font = `700 ${size}px ui-monospace, SFMono-Regular, monospace`;
+    if (ctx.measureText(label).width <= span - 8) break;
+    size -= 0.5;
+  } while (size > 5);
+  if (lit) {
+    ctx.shadowColor = '#e0407a';
+    ctx.shadowBlur = 7;
+  }
+  ctx.fillStyle = lit ? '#ffd7e8' : '#6b4257';
+  ctx.fillText(label, span / 2, panelH / 2);
+  ctx.restore();
+}
+
+/**
+ * Notes on the stage.
+ *
+ * Laid out from a hash of the tile rather than at random: Math.random would re-scatter them
+ * every frame, and the floor of a room nobody has touched should look the same on the next
+ * repaint as it did on this one. Flat parallelograms on the iso grid, so they lie on the
+ * boards rather than standing up off them.
+ */
+const NOTE_FACE = '#9cc281';
+const NOTE_EDGE = '#68894f';
+const NOTE_MARK = '#7fae64';
+
+/** A note, in tiles: a long thin rectangle rather than a square, which is what makes it read. */
+const NOTE_L = 0.3;
+const NOTE_S = 0.13;
+
+/** 0..1 from a tile and a salt, on the same stable hash everything else here looks itself up by. */
+const jitter = (x, y, salt) => (hash(`${x}:${y}:${salt}`) % 1024) / 1024;
+
+/**
+ * @param density 0..1 — how thickly this tile is strewn. Notes get thrown from the floor, so
+ *   the caller works it out from how near the tile is to somebody watching, and the back of
+ *   the stage comes out bare on its own rather than by being excluded.
+ */
+export function stageMoney(ctx, x, y, density = 1) {
+  const count = Math.floor(jitter(x, y, 'n') * (0.6 + 3.4 * density));
+  for (let i = 0; i < count; i++) {
+    const cx = x + 0.15 + jitter(x, y, `x${i}`) * 0.7;
+    const cy = y + 0.15 + jitter(x, y, `y${i}`) * 0.7;
+    // Half of them lie the other way about, so a stage is not a field of parallel stripes.
+    const across = jitter(x, y, `r${i}`) < 0.5;
+    const wt = across ? NOTE_L : NOTE_S;
+    const ht = across ? NOTE_S : NOTE_L;
+
+    // The four corners on the floor plane, so the note shears with the grid and stays a true
+    // rectangle in the world rather than a diamond drawn to look like one.
+    const quad = (fill, inset) => {
+      const ix = inset * wt;
+      const iy = inset * ht;
+      const c = [
+        iso(cx + ix, cy + iy, STAGE_H),
+        iso(cx + wt - ix, cy + iy, STAGE_H),
+        iso(cx + wt - ix, cy + ht - iy, STAGE_H),
+        iso(cx + ix, cy + ht - iy, STAGE_H),
+      ];
+      ctx.fillStyle = fill;
+      ctx.beginPath();
+      ctx.moveTo(c[0].x, c[0].y);
+      for (const q of c.slice(1)) ctx.lineTo(q.x, q.y);
+      ctx.closePath();
+      ctx.fill();
+    };
+    quad(NOTE_EDGE, 0);
+    quad(NOTE_FACE, 0.16);
+    quad(NOTE_MARK, 0.36);
+  }
 }
