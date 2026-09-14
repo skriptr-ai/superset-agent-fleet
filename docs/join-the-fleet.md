@@ -28,14 +28,10 @@ bin/fleet-add-developer <slug> "<Name>"        # e.g.  bin/fleet-add-developer j
 ```
 
 This creates the Doppler config `prd_<slug>` holding your key, your name, and the cloud's
-address, and adds your key to the cloud's key map. Re-running it is safe and keeps your key.
+address, and registers the key with the cloud's store, which knows it from then on. Nothing
+needs redeploying. Re-running it is safe and keeps your key.
 
-If it says your slug is already in the map, someone did this for you; carry on.
-
-**The cloud learns the new map on its own.** Doppler syncs `prd` to Vercel and redeploys the
-cloud when it changes, which takes a minute or two. If your first report still answers `401`
-in step 4 after that, ask someone with Vercel access to run the command in the header of
-`bin/fleet-add-developer`.
+If it says a config for your slug already exists, someone did this for you; carry on.
 
 ## Step 2 — your Mac
 
@@ -87,9 +83,9 @@ On each machine:
 curl -s localhost:4400/api/health | jq .cloud
 ```
 
-`error` must be `null` and `lastOkAt` a recent timestamp. `"cloud has no store yet"` or a
-`401` means the cloud does not know your key yet — see the end of step 1. A `null` `cloud`
-means the server is not running under Doppler; re-run the install.
+`error` must be `null` and `lastOkAt` a recent timestamp. A `401` means the cloud does not
+know your key: run step 1 again. A `null` `cloud` means the server is not running under
+Doppler; re-run the install.
 
 Then open https://superset-agent-fleet.vercel.app/api/login, paste the view token, and look
 for your name over a door. Every machine of yours fills that one room; each card says which
@@ -115,6 +111,6 @@ systemctl --user restart superset-agent-fleet                          # VM
 
 ## Leaving
 
-Remove your entry from `prd`'s `AGENT_FLEET_PUSH_KEYS` in Doppler (and redeploy, or let the
-sync do it), then `./service/uninstall.sh` on the Mac and
-`systemctl --user disable --now superset-agent-fleet` on each VM.
+Ask someone with access to the cloud's store to remove your row from `fleet_keys`, then
+`./service/uninstall.sh` on the Mac and `systemctl --user disable --now superset-agent-fleet`
+on each VM.

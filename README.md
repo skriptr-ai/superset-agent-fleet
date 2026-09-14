@@ -542,11 +542,10 @@ their door. Anyone with access to the Doppler project can do it:
 bin/fleet-add-developer jonas "Jonas"
 ```
 
-That makes the config `prd_jonas` with the key and the name, and adds the key to the cloud's
-map. The cloud reads the map from Vercel, and Doppler's Vercel integration syncs `prd` to the
-project's production environment and redeploys it whenever `prd` changes, so nothing else is
-needed. Should the sync ever be off, someone with Vercel access runs the command in the
-script's header.
+That makes the config `prd_jonas` with the key and the name, and registers the key's hash
+with the cloud's store (`fleet_keys`), which the cloud consults on every report — so nothing
+needs redeploying. Keys issued before the store existed live in `prd`'s
+`AGENT_FLEET_PUSH_KEYS`, which Doppler's Vercel integration syncs to the project.
 
 Then, on each of that developer's machines — Mac or VM — with the Superset host running and
 `bun`, `superset` and `doppler` on PATH:
@@ -567,7 +566,7 @@ as it afterwards.
 
 The view token is the same for everyone:
 `doppler secrets get AGENT_FLEET_VIEW_TOKEN --plain -p agent-fleet -c prd`. Give it once,
-over something private. Revoking a developer is removing their entry from the map.
+over something private. Revoking a developer is deleting their row from `fleet_keys`.
 
 The cloud's own variables, in Vercel: `AGENT_FLEET_PUSH_KEYS`, `AGENT_FLEET_VIEW_TOKEN`,
 `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`. Apply `cloud/schema.sql` once to the Supabase

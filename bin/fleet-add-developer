@@ -4,12 +4,10 @@
 #   bin/fleet-add-developer <slug> "<Name>"        e.g. bin/fleet-add-developer jonas "Jonas"
 #
 # Makes the config `prd_<slug>` under `prd` in the `agent-fleet` project, with the key, the
-# name over their door and the address to report to; and adds the key under `<slug>` in the
-# cloud's key map, `prd`'s AGENT_FLEET_PUSH_KEYS. Re-running it keeps the existing key.
-#
-# The cloud reads the map from Vercel, which Doppler's Vercel integration keeps in sync and
-# redeploys; without that sync, someone with Vercel access runs
-#   vercel env add AGENT_FLEET_PUSH_KEYS production --force --value "$(doppler secrets get AGENT_FLEET_PUSH_KEYS --plain -p agent-fleet -c prd)" && vercel deploy --prod
+# name over their door and the address to report to; and registers the key's hash with the
+# cloud's store, which the cloud consults on every report — so there is nothing to redeploy.
+# Re-running it keeps the existing key. The key itself is never printed and never stored
+# anywhere but the developer's own config.
 #
 # Then, on each of the developer's machines: clone this repository and
 #   ./service/install.sh --doppler prd_<slug>          (macOS)
@@ -40,8 +38,12 @@ fi
 doppler secrets set -p "$project" -c "$config" --silent \
   AGENT_FLEET_PUSH_KEY="$key" AGENT_FLEET_OWNER="$name"
 
-# Into the cloud's map, under the slug, with the name over the door.
-map="$(doppler secrets get AGENT_FLEET_PUSH_KEYS --plain -p "$project" -c prd)"
-map="$(jq -c --arg s "$slug" --arg k "$key" --arg n "$name" '. + {($s): {key: $k, owner: $n}}' <<<"$map")"
-doppler secrets set -p "$project" -c prd --silent AGENT_FLEET_PUSH_KEYS="$map"
-echo "$name is in the key map as '$slug'; their machines use: --doppler $config"
+# Its hash into the cloud's store, under the slug, with the name over the door.
+hash="$(printf '%s' "$key" | shasum -a 256 | cut -d' ' -f1)"
+url="$(doppler secrets get SUPABASE_URL --plain -p "$project" -c prd)"
+srk="$(doppler secrets get SUPABASE_SERVICE_ROLE_KEY --plain -p "$project" -c prd)"
+body="$(jq -nc --arg l "$slug" --arg h "$hash" --arg o "$name" '{p_label: $l, p_hash: $h, p_owner: $o}')"
+code="$(curl -s -o /dev/null -w '%{http_code}' -X POST "$url/rest/v1/rpc/fleet_key_set" \
+  -H "apikey: $srk" -H 'content-type: application/json' -d "$body")"
+[[ "$code" == 2* ]] || { echo "the cloud's store answered $code registering the key" >&2; exit 1; }
+echo "$name is registered as '$slug'; their machines use: --doppler $config"

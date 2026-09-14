@@ -199,3 +199,32 @@ $$;
 
 -- Nothing here is for the anon role: the functions are called with the service role only.
 revoke execute on all functions in schema public from anon, authenticated;
+
+-- ── the keys machines push with ────────────────────────────────────────────────────────────
+--
+-- One row per developer: the label, the SHA-256 of their key (never the key), and the name
+-- over their door. bin/fleet-add-developer writes here, so a new developer needs no redeploy;
+-- AGENT_FLEET_PUSH_KEYS in the environment is still honoured for anything issued before this.
+
+create table if not exists fleet_keys (
+  label       text primary key,
+  key_hash    text not null unique,
+  owner       text not null,
+  created_at  timestamptz not null default now()
+);
+alter table fleet_keys enable row level security;
+
+create or replace function fleet_key_lookup(p_hash text) returns jsonb language sql stable as $$
+  select jsonb_build_object('label', label, 'owner', owner) from fleet_keys where key_hash = p_hash;
+$$;
+
+create or replace function fleet_key_set(p_label text, p_hash text, p_owner text) returns void language sql as $$
+  insert into fleet_keys(label, key_hash, owner) values (p_label, p_hash, p_owner)
+    on conflict (label) do update set key_hash = excluded.key_hash, owner = excluded.owner;
+$$;
+
+create or replace function fleet_key_delete(p_label text) returns void language sql as $$
+  delete from fleet_keys where label = p_label;
+$$;
+
+revoke execute on all functions in schema public from anon, authenticated;

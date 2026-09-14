@@ -14,8 +14,13 @@
 // A label is a developer ("jonas"), and one key serves all of that developer's machines: the
 // store binds each host name to the label that first reported it, so a key cannot speak for
 // a machine another developer's key already reported.
+//
+// Keys issued since bin/fleet-add-developer exist are in the store as hashes (fleet_keys),
+// looked up by the hash of what was presented, so adding a developer needs no redeploy. The
+// environment map is still honoured for anything issued before that.
 
-import { timingSafeEqual } from 'node:crypto';
+import { timingSafeEqual, createHash } from 'node:crypto';
+import { rpc, configured } from './store.js';
 
 const VIEW_TOKEN = process.env.AGENT_FLEET_VIEW_TOKEN ?? '';
 export const COOKIE = 'fleet_view';
@@ -38,8 +43,12 @@ function same(a, b) {
   return x.length === y.length && timingSafeEqual(x, y);
 }
 
+/** Hashes already looked up, kept a little while: a machine presents the same key every poll. */
+const known = new Map();
+const KNOWN_MS = 60_000;
+
 /** The label and owner a push's bearer key was issued to, or null when it matches none. */
-export function pushingLabel(request) {
+export async function pushingLabel(request) {
   const header = request.headers.get('authorization') ?? '';
   const key = header.startsWith('Bearer ') ? header.slice(7) : '';
   if (!key) return null;
@@ -47,7 +56,14 @@ export function pushingLabel(request) {
     const entry = typeof issued === 'string' ? { key: issued } : (issued ?? {});
     if (same(entry.key, key)) return { label, owner: entry.owner || label };
   }
-  return null;
+  if (!configured()) return null;
+  const hash = createHash('sha256').update(key).digest('hex');
+  const cached = known.get(hash);
+  if (cached && Date.now() - cached.at < KNOWN_MS) return cached.issued;
+  const found = await rpc('fleet_key_lookup', { p_hash: hash });
+  const issued = found?.label ? { label: found.label, owner: found.owner || found.label } : null;
+  known.set(hash, { issued, at: Date.now() });
+  return issued;
 }
 
 function cookieValue(request, name) {

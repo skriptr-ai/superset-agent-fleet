@@ -11,7 +11,12 @@ export async function POST(request) {
   } catch {
     return Response.json({ ok: false, error: 'bad json' }, { status: 400 });
   }
-  const issued = pushingLabel(request);
+  let issued = null;
+  try {
+    issued = await pushingLabel(request);
+  } catch (err) {
+    return Response.json({ ok: false, error: err.message }, { status: 502 });
+  }
   const host = typeof body?.hostName === 'string' ? body.hostName : '';
   if (!issued || !host) return unauthorized();
   if (!configured())
