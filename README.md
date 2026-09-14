@@ -528,6 +528,13 @@ plus the address to report to. Install on a machine with its config and nothing 
 On a Linux host nobody logs in to, put a Doppler service token for that config in
 `~/.config/superset-agent-fleet/doppler.env` as `DOPPLER_TOKEN=…` (mode 600) before installing.
 
+**Joining, as a teammate.** The whole setup — key, Mac, VMs, checks — is one document written
+to be handed to an agent: [docs/join-the-fleet.md](docs/join-the-fleet.md). Tell yours:
+
+> Read `docs/join-the-fleet.md` in the superset-agent-fleet repo and set me up on this machine.
+
+What follows is the same thing in short.
+
 **Adding a developer.** One key per developer, for all of their machines, and their name over
 their door. Anyone with access to the Doppler project can do it:
 
