@@ -72,7 +72,8 @@ function onFace(ctx, x, yFront, u, v, draw) {
  * zoom — which is the whole reason the scene draws rather than blits.
  */
 export function buildGround(district) {
-  const { w, d, house, street, houseDepth } = district;
+  const { w, d, street, houseDepth } = district;
+  const houses = district.houses ?? [district.house];
   const roadEnd = street.roadY + street.roadRows;
   const layers = [];
   const byKey = new Map();
@@ -91,14 +92,17 @@ export function buildGround(district) {
     layer.path.closePath();
   };
 
-  const inside = (x) => x >= house.ox && x < house.ox + house.w;
+  const houseAt = (x) => houses.find((h) => x >= h.ox && x < h.ox + h.w) ?? null;
+  const inside = (x) => houseAt(x) !== null;
   for (let x = 0; x < w; x++) {
+    const house = houseAt(x);
     for (let y = 0; y < d; y++) {
       const even = (x + y) % 2 === 0;
       if (y < houseDepth) {
-        // Outside the frontage there is nothing behind it to stand on, and drawing ground
-        // there would only make the night look like a floor.
-        if (!inside(x)) continue;
+        // Outside a frontage there is nothing behind it to stand on, and drawing ground there
+        // would only make the night look like a floor. Between two houses the city draws its
+        // side street.
+        if (!house) continue;
         const bar = house.bar;
         const onLeg = x - house.ox <= STOOL_X && y <= bar.y0 + bar.len - 1;
         const onArm = y <= STOOL_X - 1 && x <= bar.armTo;

@@ -115,7 +115,9 @@ const clock = (at) =>
  * on the stools in front of it, and who is out at the tables. The panel asks the scene rather
  * than recomputing it, so the list and the room can never disagree about who is whose worker.
  */
-let room = { bar: [], tables: [], queue: [] };
+let room = { rooms: [], bar: [], tables: [], queue: [] };
+/** The developers with a restaurant on the street, [{key, name}], as the sources last said. */
+let owners = [];
 const patchOf = (id) => room.bar.find((p) => p.hubId === id || p.members.includes(id)) ?? null;
 /** The bartender driving this session, or null when the session is one of yours. */
 const bartenderOf = (id) => {
@@ -169,7 +171,7 @@ function setFilter(value) {
   renderProjects();
   applyFilter();
   scene.select(null);
-  scene.setWorld(agents, hubIds, links);
+  scene.setWorld(agents, hubIds, links, owners);
   room = scene.roomState();
   scene.fit();
   renderHeader({ tick: lastTick, error: null, hosts: null });
@@ -377,45 +379,71 @@ function renderList() {
       ? `<h3>${title} <small>${list.length}</small></h3>${note ? `<p class="hint">${note}</p>` : ''}${list.map(card).join('')}`
       : '';
 
-  const inLine = new Set(room.queue);
-  const claimed = new Set();
-  const blocks = [];
-  for (const patch of room.bar) {
-    const tender = known.get(patch.hubId);
-    if (tender) claimed.add(tender.id);
-    const stools = patch.members
-      .filter((id) => !inLine.has(id))
+  const visible = new Set(agents.map((a) => a.id));
+  const houses = [];
+  for (const house of room.rooms) {
+    const inLine = new Set(house.queue);
+    const claimed = new Set();
+    const blocks = [];
+    for (const patch of house.bar) {
+      const tender = known.get(patch.hubId);
+      if (tender) claimed.add(tender.id);
+      const stools = patch.members
+        .filter((id) => !inLine.has(id))
+        .map((id) => known.get(id))
+        .filter(Boolean)
+        .sort((a, b) => (connFor(b.id)?.lastAt ?? 0) - (connFor(a.id)?.lastAt ?? 0));
+      for (const agent of stools) claimed.add(agent.id);
+      if (!tender && !stools.length) continue;
+      const tenderName = tender
+        ? (issueOf(tender.name, tender.branch).key ?? short(tender.name, 24))
+        : 'nobody yet';
+      // The folder this crew shares, if the bartender filed its workers with it.
+      const folder = (tender?.tags ?? []).find((tag) =>
+        stools.some((agent) => (agent.tags ?? []).includes(tag)),
+      );
+      blocks.push(
+        `<h3>At the bar <small>${stools.length}</small></h3>` +
+          `<p class="hint">Orchestrated by ${escape(tenderName)}${folder ? ` · folder 📁 ${escape(folder)}` : ''} — messages go straight over the bar.</p>` +
+          (tender ? card(tender) : '') +
+          stools.map(card).join(''),
+      );
+    }
+
+    const here = house.agents.filter((id) => visible.has(id));
+    const dining = here
+      .filter((id) => !claimed.has(id) && !inLine.has(id))
       .map((id) => known.get(id))
       .filter(Boolean)
-      .sort((a, b) => (connFor(b.id)?.lastAt ?? 0) - (connFor(a.id)?.lastAt ?? 0));
-    for (const agent of stools) claimed.add(agent.id);
-    if (!tender && !stools.length) continue;
-    const tenderName = tender
-      ? (issueOf(tender.name, tender.branch).key ?? short(tender.name, 24))
-      : 'nobody yet';
-    // The folder this crew shares, if the bartender filed its workers with it.
-    const folder = (tender?.tags ?? []).find((tag) =>
-      stools.some((agent) => (agent.tags ?? []).includes(tag)),
-    );
-    blocks.push(
-      `<h3>At the bar <small>${stools.length}</small></h3>` +
-        `<p class="hint">Orchestrated by ${escape(tenderName)}${folder ? ` · folder 📁 ${escape(folder)}` : ''} — messages go straight over the bar.</p>` +
-        (tender ? card(tender) : '') +
-        stools.map(card).join(''),
+      .sort((a, b) => a.name.localeCompare(b.name));
+    // In the order they joined the line, which is the order the room draws them in.
+    const line = house.queue
+      .map((id) => known.get(id))
+      .filter((a) => a && visible.has(a.id) && !claimed.has(a.id));
+
+    // With a project filter on, a restaurant with none of that project in it is left out.
+    if (projectFilter && !here.length) continue;
+    houses.push(
+      `<h2 class="house">${escape(house.name)} <small>${here.length}</small></h2>` +
+        (blocks.length
+          ? blocks.join('')
+          : '<h3>At the bar <small>0</small></h3><p class="hint">Nobody is orchestrating here yet — a bartender is elected as soon as a session is seen driving two others.</p>') +
+        section(
+          'At the tables',
+          dining,
+          `Working, and nobody is orchestrating them — they are ${escape(house.name)}'s, and a waiter carries out what they send.`,
+        ) +
+        section(
+          'In line at the door',
+          line,
+          'Resting. Behind the rope until somebody gives them a turn; a worker goes back to its stool, anyone else to a table.',
+        ),
     );
   }
 
-  const dining = agents
-    .filter((a) => !claimed.has(a.id) && !inLine.has(a.id))
-    .sort((a, b) => a.name.localeCompare(b.name));
-
-  // In the order they joined the line, which is the order the room draws them in.
-  const line = room.queue.map((id) => known.get(id)).filter((a) => a && !claimed.has(a.id));
-
-  els.panel.innerHTML = `
-    ${blocks.length ? blocks.join('') : '<h3>At the bar <small>0</small></h3><p class="hint">Nobody is orchestrating yet — a bartender is elected as soon as a session is seen driving two others. Until then the bar stands empty and the whole fleet is out on the floor.</p>'}
-    ${section('At the tables', dining, 'Working, and nobody is orchestrating them — they are yours, and a waiter carries out what you send them.')}
-    ${section('In line at the door', line, 'Resting. Behind the rope until somebody gives them a turn; a worker goes back to its stool, anyone else to a table.')}`;
+  els.panel.innerHTML = houses.length
+    ? houses.join('')
+    : '<p class="hint">No restaurant is open yet: nothing has reported.</p>';
 
   for (const node of els.panel.querySelectorAll('.card')) {
     node.addEventListener('click', () => scene.select(node.dataset.id));
@@ -618,7 +646,7 @@ window.addEventListener('keydown', (e) => {
     else openDrawer(false);
   }
   if (e.key === 'f' || e.key === 'F') scene.fit();
-  // 1 the whole room, 2 the bar, 3 the tables, anything past that the street.
+  // 1 … 9: the n-th restaurant along the street.
   if (e.key >= '1' && e.key <= '9') scene.fitZone(Number(e.key) - 1);
   if (e.key === 's' || e.key === 'S') openDrawer(!drawerOpen());
   if (e.key === 'r' || e.key === 'R') {
@@ -679,10 +707,16 @@ function merged() {
   const hubs = new Set();
   const linkByPair = new Map();
   const fresh = [];
+  const ownerNames = new Map();
   let tick = 0;
 
   for (const [key, snapshot] of sources) {
-    for (const agent of snapshot.agents ?? []) {
+    // Whose restaurant this source's sessions fill: the developer the cloud names, else the
+    // machine itself. A source with nobody on it still keeps its developer's room standing.
+    const owner = snapshot.owner || snapshot.hostName || '';
+    if (owner) ownerNames.set(owner, owner);
+    for (const raw of snapshot.agents ?? []) {
+      const agent = { ...raw, owner: raw.owner ?? owner };
       // An instance running ON an agent's machine reports it as local, and knows more about it
       // than a fleet-scoped instance reading the same room over the cloud. Prefer that one.
       const held = agentsById.get(agent.id);
@@ -718,6 +752,7 @@ function merged() {
   return {
     tick,
     agents: [...agentsById.values()],
+    owners: [...ownerNames.keys()].sort().map((name) => ({ key: name, name })),
     hubIds: [...hubs],
     links: [...linkByPair.values()],
     fresh,
@@ -729,6 +764,7 @@ function merged() {
 function redraw() {
   const world = merged();
   allAgents = world.agents;
+  owners = world.owners;
   hubIds = world.hubIds;
   // Pins are the home server's alone: that is the one the button posts to. In the cloud they
   // are the cloud's, and every machine's snapshot carries the same set.
@@ -738,7 +774,7 @@ function redraw() {
   links = world.links;
   renderProjects();
   applyFilter();
-  scene.setWorld(agents, hubIds, links);
+  scene.setWorld(agents, hubIds, links, owners);
   room = scene.roomState();
   // The stream replays its backlog on connect so threads have history; animating all of
   // it would fire a minute of traffic at once, so only live ticks reach the scene.

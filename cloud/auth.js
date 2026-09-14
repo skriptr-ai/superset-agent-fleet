@@ -7,7 +7,9 @@
 // a leaked view token can write nothing but a pin.
 //
 // Both live in Doppler and reach here as environment variables: AGENT_FLEET_PUSH_KEYS is a
-// JSON map of machine label to key, AGENT_FLEET_VIEW_TOKEN the one word that opens the page.
+// JSON map of machine label to key — or to `{key, owner}`, where owner is the developer whose
+// restaurant that machine's sessions fill; a bare key means the label is the owner —
+// and AGENT_FLEET_VIEW_TOKEN the one word that opens the page.
 //
 // The label is ours ("jonas-mac"), not Superset's name for the machine, which nobody knows
 // until it reports. The store binds label to host name on the first report and holds the
@@ -36,12 +38,15 @@ function same(a, b) {
   return x.length === y.length && timingSafeEqual(x, y);
 }
 
-/** The label a push's bearer key was issued to, or null when it matches none. */
+/** The label and owner a push's bearer key was issued to, or null when it matches none. */
 export function pushingLabel(request) {
   const header = request.headers.get('authorization') ?? '';
   const key = header.startsWith('Bearer ') ? header.slice(7) : '';
   if (!key) return null;
-  for (const [label, issued] of Object.entries(keys())) if (same(issued, key)) return label;
+  for (const [label, issued] of Object.entries(keys())) {
+    const entry = typeof issued === 'string' ? { key: issued } : (issued ?? {});
+    if (same(entry.key, key)) return { label, owner: entry.owner || label };
+  }
   return null;
 }
 

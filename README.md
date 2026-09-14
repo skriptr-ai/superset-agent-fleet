@@ -3,8 +3,11 @@
 A Habbo-style pixel-art city block that shows your [Superset](https://superset.sh) agent fleet
 at work.
 
-**One restaurant, and it is your fleet.** The room has two halves and every session is in one
-of them.
+**One restaurant per developer, and it is their fleet.** The restaurants stand in a row along
+the same street, a side street between each pair, and the name over each door is the developer
+whose machines feed it. On your own machine there is one, and it is yours. On the public view
+there is one for everybody reporting, so a team sees each other's rooms side by side. Every
+room has two halves and every session is in one of them.
 
 **The bar is the orchestration.** It is an L: the long leg runs the length of the left wall with
 back-bar shelves behind it, and the short arm turns at the corner and runs along the back wall
@@ -18,8 +21,8 @@ a turn. Several orchestrators run at once, so the bar is divided into patches, o
 laid back to front in the order they were elected. A bar with nobody behind it is still a bar; it
 just stands there empty.
 
-**The dining room is yours.** The kitchen is a corner at the back right — small, because the bar
-took the rest — and the chef in it is the developer, you. Every session nobody is orchestrating is
+**The dining room is the developer's.** The kitchen is a corner at the back right — small,
+because the bar took the rest — and the chef in it is the developer whose name is over the door. Every session nobody is orchestrating is
 a customer at a table, waiting on you rather than on an agent. When you send one of them
 something, a waiter collects it at the pass and carries it out to that table; when one finishes a
 turn, a waiter brings the note back to the kitchen.

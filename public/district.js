@@ -1,9 +1,12 @@
-// The district: one restaurant and the street outside it, laid out on ONE tile grid.
+// The district: a row of restaurants, one per developer, and the street outside them, laid out
+// on ONE tile grid.
 //
 // The whole point of a single grid is the walk. A session that has been eating at a table and
 // is then picked up by an orchestrator does not blink out of one place and into another: it
 // gets up, crosses the dining room and takes a stool at the bar — one BFS over one grid,
-// because there is only ever one world.
+// because there is only ever one world. The houses stand side by side along the same street
+// with a side street between each pair, so a session that changes hands between developers
+// walks out of one door and along the pavement to the next.
 //
 // Geometry only. Nothing here knows about agents, time or the canvas. It answers "where does
 // the bar run, where do the tables go, where do the vans park, what can be walked on", and the
@@ -106,20 +109,24 @@ const STREET_W = CITY.pave * 2 + CITY.lanes;
 const TRAFFIC_REACH = 30;
 
 /**
- * The city's geometry, as functions of a block index. Column bands are numbered from the
- * restaurant's own (0) outward, negative to the left; row bands from the restaurant's own (0)
- * backward, so `rowBand(1)` is the block behind it. Between any two neighbouring bands is one
+ * The city's geometry, as functions of a block index. Column bands 0 … N-1 are the restaurants
+ * themselves, left to right; negative bands are the blocks to the left of the first, bands from
+ * N up the blocks to the right of the last. Row bands count from the restaurants' own (0)
+ * backward, so `rowBand(1)` is the block behind them. Between any two neighbouring bands is one
  * street of STREET_W tiles, and there is a street outside the last band too.
  */
-function planCity({ hw, rd, street }) {
+function planCity({ houses, rd, street }) {
   const { blockW, blockD, pave } = CITY;
   const colPitch = blockW + STREET_W;
   const rowPitch = blockD + STREET_W;
+  const N = houses.length;
+  /** Where the last restaurant ends: the city to the right starts a street after it. */
+  const hx1 = houses[N - 1].x1;
 
   const colBand = (i) => {
-    if (i === 0) return { x0: 0, x1: hw };
-    if (i > 0) {
-      const x0 = hw + STREET_W + (i - 1) * colPitch;
+    if (i >= 0 && i < N) return houses[i];
+    if (i >= N) {
+      const x0 = hx1 + STREET_W + (i - N) * colPitch;
       return { x0, x1: x0 + blockW };
     }
     const x1 = -STREET_W - (-i - 1) * colPitch;
@@ -137,9 +144,12 @@ function planCity({ hw, rd, street }) {
 
   /** Which column band, or which street after one, a tile column falls in. */
   const colIndexAt = (x) => {
-    if (x >= 0 && x < hw) return 0;
-    if (x >= hw) return 1 + Math.floor((x - hw) / colPitch);
-    return -1 - Math.floor((-x - 1) / colPitch);
+    if (x < 0) return -1 - Math.floor((-x - 1) / colPitch);
+    if (x >= hx1) return N + Math.floor((x - hx1) / colPitch);
+    // Among the restaurants, whose widths differ: the last one starting at or before x.
+    let i = 0;
+    while (i + 1 < N && x >= houses[i + 1].x0) i += 1;
+    return i;
   };
   /** Which row band, or which street behind one, a tile row falls in; 0 for the street rows too. */
   const rowIndexAt = (y) => (y >= 0 ? 0 : 1 + Math.floor((-y - 1) / rowPitch));
@@ -161,13 +171,21 @@ function planCity({ hw, rd, street }) {
   };
 
   const { side, back } = CITY.ring;
+  // The first and last column bands that are town: the ring of blocks either side of the row
+  // of restaurants.
+  const first = -side;
+  const last = N - 1 + side;
   // The town's own tiles: the last blocks on every side, their streets, and the pavements
   // beyond those. Past that is plain ground, and past the main road is the river.
-  const x0 = colRoad(-side - 1).x0 - pave;
-  const x1 = colRoad(side).x1 + pave;
+  const x0 = colRoad(first - 1).x0 - pave;
+  const x1 = colRoad(last).x1 + pave;
   const y0 = rowRoad(back).y0 - pave;
 
   return {
+    houseCount: N,
+    isHouse: (i, j) => j === 0 && i >= 0 && i < N,
+    first,
+    last,
     colBand,
     rowBand,
     colRoad,
@@ -207,30 +225,45 @@ export function barWidth(patches) {
  * The plan for the whole district.
  *
  * @param {object} options
- * @param {{key: string, name: string, seats: number, bar: {hubId: string, stools: number}[]}} options.house
- *   the restaurant: how many tables it needs, and one patch of bar per orchestrator
+ * @param {{key: string, name: string, seats: number, bar: {hubId: string, stools: number}[]}[]} options.houses
+ *   the restaurants, left to right, one per developer: how many tables each needs, and one
+ *   patch of bar per orchestrator. `house` is accepted for one on its own.
  */
-export function buildDistrict({ house = {} } = {}) {
-  const party = Math.max(1, house.seats ?? 1);
-  const patches = house.bar ?? [];
+export function buildDistrict({ houses = [], house = null } = {}) {
+  const specs = houses.length ? houses : [house ?? {}];
 
-  // The room is cut to whichever of its two halves is hungrier. The bar runs down the depth, so
-  // a busy bar makes the room DEEPER — and the dining room then gets NARROWER to match, laying
-  // the same tables out in more rows of fewer columns. Growing both ways at once is what turns
-  // a restaurant into an aircraft hangar with eight people in it.
-  const square = Math.max(2, Math.ceil(Math.sqrt(party * 1.4)));
-  const rowsForBar =
-    Math.ceil((barWidth(patches) + BAR_TO_ROPE - FIRST_TABLE_Y - 2) / TABLE_GAP) + 1;
-  const rows = Math.max(1, Math.ceil(party / square), rowsForBar);
-  const cols = Math.max(MIN_TABLE_COLS, Math.ceil(party / rows));
+  // Each room is cut to whichever of its two halves is hungrier. The bar runs down the depth,
+  // so a busy bar makes the room DEEPER — and the dining room then gets NARROWER to match,
+  // laying the same tables out in more rows of fewer columns. Growing both ways at once is what
+  // turns a restaurant into an aircraft hangar with eight people in it.
+  const sized = specs.map((spec) => {
+    const party = Math.max(1, spec.seats ?? 1);
+    const patches = spec.bar ?? [];
+    const square = Math.max(2, Math.ceil(Math.sqrt(party * 1.4)));
+    const rowsForBar =
+      Math.ceil((barWidth(patches) + BAR_TO_ROPE - FIRST_TABLE_Y - 2) / TABLE_GAP) + 1;
+    const rows = Math.max(1, Math.ceil(party / square), rowsForBar);
+    return { spec, party, patches, rows };
+  });
 
+  // The houses share one frontage, so they are all as deep as the deepest of them: a shallower
+  // one would stand back from the pavement with nothing between its door and the street.
+  const rows = Math.max(...sized.map((s) => s.rows));
   const lobbyY = FIRST_TABLE_Y + (rows - 1) * TABLE_GAP + 2;
   // One row deeper than the rope line's lobby, so the doorway is not also somebody's place
   // in the queue.
   const rd = lobbyY + 5;
 
-  const hw = FLOOR_X + cols * TABLE_GAP + 3;
-  const plan = planHouse({ ...house, cols, rows, bar: patches }, 0, hw, lobbyY, rd);
+  // Left to right, a side street between each pair.
+  const plans = [];
+  let ox = 0;
+  for (const s of sized) {
+    const cols = Math.max(MIN_TABLE_COLS, Math.ceil(s.party / rows));
+    const hw = FLOOR_X + cols * TABLE_GAP + 3;
+    plans.push(planHouse({ ...s.spec, cols, rows, bar: s.patches }, ox, hw, lobbyY, rd));
+    ox += hw + STREET_W;
+  }
+  const hx1 = ox - STREET_W;
 
   const walkY = rd;
   const roadY = rd + WALK_ROWS;
@@ -238,10 +271,10 @@ export function buildDistrict({ house = {} } = {}) {
   const crowdY = kerbY + KERB_ROWS;
   const d = crowdY + CROWD_ROWS;
 
-  // The street has to run wider than the building does. Each row of it toward the camera shifts
+  // The street has to run wider than the buildings do. Each row of it toward the camera shifts
   // half a tile left on screen, so a pavement that ends where the frontage ends visibly falls
   // short of it by exactly the depth of the street.
-  const w = hw + (d - rd);
+  const w = hx1 + (d - rd);
 
   const street = {
     walkY,
@@ -252,24 +285,32 @@ export function buildDistrict({ house = {} } = {}) {
     kerbRows: KERB_ROWS,
     crowdY,
     crowdRows: CROWD_ROWS,
-    // A zebra in front of the door, which is what makes the frontage read as an entrance.
-    crossings: [{ x0: plan.door.x - 1, x1: plan.door.x + 2 }],
+    // A zebra in front of every door, which is what makes a frontage read as an entrance.
+    crossings: plans.map((plan) => ({ x0: plan.door.x - 1, x1: plan.door.x + 2 })),
   };
 
-  const city = planCity({ hw, rd, street });
-  const props = planProps({ w, street, plan, city });
-  const { blocked, blockedStaff } = planBlocking({ w, d, plan, rd, street });
+  const city = planCity({
+    houses: plans.map((plan) => ({ x0: plan.ox, x1: plan.ox + plan.w })),
+    rd,
+    street,
+  });
+  const props = planProps({ w, street, plans, city });
+  const { blocked, blockedStaff } = planBlocking({ w, d, plans, rd, street });
 
   return {
     w,
     d,
     houseDepth: rd,
-    house: plan,
+    houses: plans,
+    /** The first house, for anything that still wants just one. */
+    house: plans[0],
     street,
     city,
     props,
     blocked,
     blockedStaff,
+    /** What the layout is made of, for anyone caching things cut to it. */
+    signature: `${plans.map((plan) => `${plan.ox}:${plan.w}`).join(',')}|${rd}`,
   };
 }
 
@@ -373,14 +414,20 @@ function planHouse(spec, ox, w, lobbyY, rd) {
  * The big pieces are placed at fractions of the frontage rather than at fixed pitches, so a
  * narrow street gets the same three landmarks spread across it as a wide one does.
  */
-function planProps({ w, street, plan, city }) {
+function planProps({ w, street, plans, city }) {
   const props = [];
   const { walkY, roadY, roadRows, kerbY, crowdY, crowdRows } = street;
   const backEdge = crowdY + crowdRows - 1;
+  const doors = plans.map((plan) => plan.door.x);
   // The far pavement is cut by the side streets coming down to the main road, so nothing
   // stands where a car would drive through it.
-  const clearOfDoor = (x) => Math.abs(x - plan.door.x) > 2 && !city.isRoadColumn(x);
-  const at = (fraction) => Math.max(2, Math.min(w - 4, Math.round(w * fraction)));
+  const clearOfDoor = (x) => doors.every((door) => Math.abs(x - door) > 2) && !city.isRoadColumn(x);
+  const at = (fraction) => {
+    let x = Math.max(2, Math.min(w - 4, Math.round(w * fraction)));
+    // Nudged off a side street, which the far pavement's landmarks would otherwise stand in.
+    for (let i = 0; i < 8 && city.isRoadColumn(x); i++) x += 1;
+    return x;
+  };
 
   // The far pavement, in front of the frontage, kept clear of the door.
   for (let x = 4; x < w - 1; x += 8)
@@ -391,7 +438,7 @@ function planProps({ w, street, plan, city }) {
     if (clearOfDoor(x)) props.push({ kind: 'bench', x, y: walkY });
   for (let x = 2; x < w - 2; x += 9) if (clearOfDoor(x)) props.push({ kind: 'tree', x, y: walkY });
   props.push({ kind: 'hydrant', x: at(0.62), y: walkY + 1 });
-  props.push({ kind: 'trafficLight', x: Math.max(2, plan.door.x - 4), y: walkY + 1 });
+  props.push({ kind: 'trafficLight', x: Math.max(2, doors[0] - 4), y: walkY + 1 });
 
   // The near pavement: three landmarks, spread out, with the parked cars between them.
   // Kept off the crossing, which is the one stretch of kerb that has to stay walkable.
@@ -429,7 +476,7 @@ function planProps({ w, street, plan, city }) {
  * behind the bar and may not leave the building; staff may use the kitchen and the back of the
  * bar but not the stove, the chef, the card table or the pass, and never go outdoors.
  */
-function planBlocking({ w, d, plan, rd, street }) {
+function planBlocking({ w, d, plans, rd, street }) {
   const blocked = new Set();
   const blockedStaff = new Set();
   const block = (x, y, staffToo = true) => {
@@ -437,9 +484,28 @@ function planBlocking({ w, d, plan, rd, street }) {
     if (staffToo) blockedStaff.add(`${x},${y}`);
   };
 
-  // Everything on the building's rows is a wall until the room says otherwise.
+  // Everything on the buildings' rows is a wall until a room says otherwise — the side streets
+  // between them included, which nobody crosses except along the pavement.
   for (let x = 0; x < w; x++) for (let y = 0; y < rd; y++) block(x, y);
 
+  for (const plan of plans) blockHouse(plan, rd, block, blocked, blockedStaff);
+
+  // The road is for traffic. The crossing is not.
+  const onCrossing = (x) => street.crossings.some((c) => x >= c.x0 && x <= c.x1);
+  for (let x = 0; x < w; x++) {
+    for (let y = street.roadY; y < street.roadY + street.roadRows; y++) {
+      if (!onCrossing(x)) block(x, y);
+      else blockedStaff.add(`${x},${y}`);
+    }
+  }
+  // Waiters stay indoors: the whole outdoors is a wall to them.
+  for (let x = 0; x < w; x++) for (let y = rd; y < d; y++) blockedStaff.add(`${x},${y}`);
+
+  return { blocked, blockedStaff };
+}
+
+/** One house's furniture and walls, carved out of the slab and blocked back in. */
+function blockHouse(plan, rd, block, blocked, blockedStaff) {
   const { ox, w: hw, lobbyY, chef, station, podium, host, gate, entrance, slots, bar } = plan;
   for (let x = ox; x < ox + hw; x++) {
     for (let y = 0; y < rd; y++) {
@@ -480,17 +546,4 @@ function planBlocking({ w, d, plan, rd, street }) {
   }
   block(podium.x, podium.y);
   block(host.x, host.y);
-
-  // The road is for traffic. The crossing is not.
-  const onCrossing = (x) => street.crossings.some((c) => x >= c.x0 && x <= c.x1);
-  for (let x = 0; x < w; x++) {
-    for (let y = street.roadY; y < street.roadY + street.roadRows; y++) {
-      if (!onCrossing(x)) block(x, y);
-      else blockedStaff.add(`${x},${y}`);
-    }
-  }
-  // Waiters stay indoors: the whole outdoors is a wall to them.
-  for (let x = 0; x < w; x++) for (let y = rd; y < d; y++) blockedStaff.add(`${x},${y}`);
-
-  return { blocked, blockedStaff };
 }

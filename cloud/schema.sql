@@ -9,6 +9,8 @@ create table if not exists fleet_hosts (
   name        text primary key,
   -- The label of the key that first reported this machine; no other key may report it.
   label       text,
+  -- The developer whose restaurant this machine's sessions fill, as the key map says.
+  owner       text,
   snapshot    jsonb not null default '{}'::jsonb,
   seq         bigint not null default 0,
   seen_at     timestamptz not null default now(),
@@ -16,6 +18,7 @@ create table if not exists fleet_hosts (
 );
 
 alter table fleet_hosts add column if not exists label text;
+alter table fleet_hosts add column if not exists owner text;
 
 create table if not exists fleet_events (
   host     text not null references fleet_hosts(name) on delete cascade,
@@ -54,15 +57,18 @@ create or replace function fleet_watch_ttl() returns interval language sql immut
 /*
   Take in what a machine pushed. Returns the pins it should hold and how many pages are open.
     p_label      the label its key was issued to; bound to the host on first report
+    p_owner      the developer the key map names for that label; taken as said, every time
     p_snapshot   its latest world without events (ignored on a heartbeat)
     p_events     the events new since its last push
     p_pins       its own pins, adopted only the first time it reports
     p_changes    [{id, pinned}] pins made on its own page since the last push
 */
 drop function if exists fleet_push(text, jsonb, jsonb, jsonb, boolean, jsonb);
+drop function if exists fleet_push(text, text, jsonb, jsonb, jsonb, boolean, jsonb);
 create or replace function fleet_push(
   p_host      text,
   p_label     text,
+  p_owner     text,
   p_snapshot  jsonb,
   p_events    jsonb,
   p_pins      jsonb,
@@ -99,18 +105,19 @@ begin
   end loop;
 
   if p_heartbeat and v_known then
-    update fleet_hosts set seen_at = now(), label = coalesce(label, p_label) where name = p_host;
+    update fleet_hosts set seen_at = now(), label = coalesce(label, p_label), owner = p_owner
+      where name = p_host;
   else
     if not v_known then
       insert into fleet_pins(id)
         select value from jsonb_array_elements_text(coalesce(p_pins, '[]'::jsonb))
         on conflict do nothing;
     end if;
-    insert into fleet_hosts(name, label, snapshot, seen_at, updated_at)
-      values (p_host, p_label, coalesce(p_snapshot, '{}'::jsonb) - 'events', now(), now())
+    insert into fleet_hosts(name, label, owner, snapshot, seen_at, updated_at)
+      values (p_host, p_label, p_owner, coalesce(p_snapshot, '{}'::jsonb) - 'events', now(), now())
       on conflict (name) do update
         set snapshot = excluded.snapshot, label = coalesce(fleet_hosts.label, excluded.label),
-            seen_at = now(), updated_at = now();
+            owner = excluded.owner, seen_at = now(), updated_at = now();
     if v_count > 0 then
       update fleet_hosts set seq = seq + v_count where name = p_host returning seq - v_count into v_first;
       insert into fleet_events(host, seq, payload)
@@ -141,6 +148,7 @@ create or replace function fleet_read(p_since jsonb) returns jsonb language sql 
     'hosts', coalesce((
       select jsonb_agg(jsonb_build_object(
         'name', h.name,
+        'owner', h.owner,
         'snapshot', h.snapshot,
         'seq', h.seq,
         'seenAt', (extract(epoch from h.seen_at) * 1000)::bigint,

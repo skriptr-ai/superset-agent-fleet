@@ -11,13 +11,13 @@ export async function POST(request) {
   } catch {
     return Response.json({ ok: false, error: 'bad json' }, { status: 400 });
   }
-  const label = pushingLabel(request);
+  const issued = pushingLabel(request);
   const host = typeof body?.hostName === 'string' ? body.hostName : '';
-  if (!label || !host) return unauthorized();
+  if (!issued || !host) return unauthorized();
   if (!configured())
     return Response.json({ ok: false, error: 'cloud has no store yet' }, { status: 503 });
   try {
-    const { pins, watchers } = await accept(host, label, {
+    const { pins, watchers } = await accept(host, issued, {
       snapshot: body.snapshot ?? {},
       events: Array.isArray(body.events) ? body.events : [],
       pins: Array.isArray(body.pins) ? body.pins.filter((p) => typeof p === 'string') : [],

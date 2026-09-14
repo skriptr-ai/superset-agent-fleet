@@ -57,6 +57,13 @@ const isLoopback = (host) => host === '127.0.0.1' || host === '::1' || host === 
  */
 const SCOPE = process.env.AGENT_FLEET_SCOPE === 'host' ? 'host' : 'fleet';
 
+/**
+ * Whose restaurant this machine's sessions fill. The public view learns it from the key map;
+ * this machine's own page learns it here, so the sign over the door reads the same on both.
+ * Unset, the sign reads the machine's name.
+ */
+const OWNER = process.env.AGENT_FLEET_OWNER ?? '';
+
 /** Peers are printed at startup and a token in the URL is a secret, not decoration. */
 const hideToken = (url) => url.replace(/([?&]token=)[^&]*/, '$1…');
 
@@ -191,6 +198,7 @@ async function pollForever() {
     const started = Date.now();
     try {
       const snapshot = await world.poll();
+      if (OWNER) snapshot.owner = OWNER;
       history.push(...snapshot.events);
       if (history.length > EVENT_HISTORY) history.splice(0, history.length - EVENT_HISTORY);
       latest = snapshot;

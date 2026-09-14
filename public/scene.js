@@ -1,6 +1,7 @@
-// One restaurant, and the street it stands on.
+// A row of restaurants, one per developer, and the street they stand on.
 //
-// The room is the whole fleet, and it is read in two halves.
+// Each room is one developer's fleet — the sessions on their machines — and it is read in two
+// halves.
 //
 // **The bar is the orchestration.** An orchestrator is the bartender; the sessions it has been
 // observed driving are the ones on the stools in front of it, and every message between them
@@ -8,12 +9,13 @@
 // orchestrators run at once, so the bar is divided into patches, one per bartender, laid left
 // to right in the order they were elected. A bar with nobody behind it is still a bar.
 //
-// **The dining room is yours.** The chef in the kitchen is the developer — you — and every
-// session nobody is orchestrating is a customer at a table, waiting on you rather than on an
-// agent. When you send one of them something, a waiter carries it out of the kitchen to that
-// table; when one finishes a turn, a waiter brings the note back to the pass.
+// **The dining room is the developer's.** The chef in the kitchen is the developer whose name
+// is over the door, and every session nobody is orchestrating is a customer at a table, waiting
+// on them rather than on an agent. When they send one of them something, a waiter carries it
+// out of the kitchen to that table; when one finishes a turn, a waiter brings the note back to
+// the pass.
 //
-// The room is a cutaway: no roof, no front wall, the whole floor in view. Everything with a
+// The rooms are cutaways: no roof, no front wall, the whole floor in view. Everything with a
 // position lives on one tile grid; anyone who moves walks it tile by tile along a BFS path.
 // Everything is drawn straight onto the retina canvas at the current zoom, so it is crisp at
 // any scale and zooming is continuous.
@@ -105,8 +107,8 @@ const FRONT_PEEK = 40;
 /** Where the restaurant's centre sits down the canvas in the opening view: a touch below the middle. */
 const ROOM_CENTRE = 0.54;
 
-/** The name over the door. There is one restaurant, so there is one name. */
-const HOUSE_NAME = 'The Orchestra';
+/** The name over a door when its developer has none: a machine reporting on its own. */
+const NAMELESS = 'This machine';
 
 /** A session must be seen driving this many peers of its own to be a second orchestrator. */
 const SECOND_HUB_MIN = 2;
@@ -156,15 +158,18 @@ export class Scene {
     this.shapeSignature = '';
     this.district = null;
     this.ground = null;
-    /** The restaurant: its plan, its kitchen crew, its bar patches and its order book. */
-    this.room = null;
+    /**
+     * The restaurants, left to right, one per developer: each its plan, its kitchen crew, its
+     * bar patches, its order book, its tables and its line at the door.
+     */
+    this.rooms = [];
+    /** The developers whose restaurants stand here, as the page last said: [{key, name}]. */
+    this.owners = [];
+    /** workspaceId → the room it belongs to, by its developer. */
+    this.roomOfId = new Map();
     /** workspaceId → the bartender driving it, and which stool of that patch it has */
     this.barOf = new Map();
     this.stoolOf = new Map();
-    /** workspaceId → index of the table it has been given */
-    this.tableOf = new Map();
-    /** Whoever could not be seated, in the order they arrived. */
-    this.queue = [];
     this.placement = new Map();
     this.blocked = new Set();
     this.blockedStaff = new Set();
@@ -177,7 +182,7 @@ export class Scene {
     this.toasts = [];
     this.selectedId = null;
     this.hoverId = null;
-    this.hoverRoom = false;
+    this.hoverRoom = null;
     this.pointer = { x: 0, y: 0 };
     this.showReads = true;
     this.onSelect = () => {};
@@ -203,7 +208,7 @@ export class Scene {
       this.#resize();
       // The window's new shape gives the opening view a new size; whatever the camera was
       // doing, it must still be inside it.
-      if (this.room) this.#rehome();
+      if (this.rooms.length) this.#rehome();
     });
     requestAnimationFrame(() => this.#frame());
   }
@@ -232,17 +237,46 @@ export class Scene {
 
   // ── world state ───────────────────────────────────────────────────────────────────────────
 
-  setWorld(agents, hubIds, links) {
+  /**
+   * @param owners the developers with a restaurant here, [{key, name}], in the order their
+   *   houses stand. A developer named on an agent but not here gets one anyway; one here with
+   *   no agents keeps an empty room rather than losing it.
+   */
+  setWorld(agents, hubIds, links, owners = []) {
     this.agents = agents;
     // The server sends every orchestrator it has elected, most-driving first. A single id is
     // still accepted so an older server, or a console poke, keeps working.
     this.hubIds = Array.isArray(hubIds) ? hubIds : hubIds ? [hubIds] : [];
     this.links = links ?? [];
+    this.owners = owners;
     this.#layout();
-    if (this.needsFit && this.room) {
+    if (this.needsFit && this.rooms.length) {
       this.fit(true);
       this.needsFit = false;
-    } else if (this.room) this.#rehome();
+    } else if (this.rooms.length) this.#rehome();
+  }
+
+  /** The room a session belongs to, by the developer whose machine it runs on. */
+  #roomOf(id) {
+    return this.roomOfId.get(id) ?? null;
+  }
+
+  /**
+   * The developers and their sessions, in the order the houses stand: as the page listed them,
+   * then anyone an agent names that the page did not, then the nameless.
+   */
+  #groups() {
+    const groups = new Map();
+    const add = (key, name) => {
+      if (!groups.has(key)) groups.set(key, { key, name: name || key || NAMELESS, agents: [] });
+      return groups.get(key);
+    };
+    for (const owner of this.owners) add(owner.key ?? owner.name ?? '', owner.name);
+    for (const agent of this.agents) {
+      const key = agent.owner ?? agent.hostName ?? '';
+      add(key, key).agents.push(agent);
+    }
+    return [...groups.values()];
   }
 
   /**
@@ -259,8 +293,8 @@ export class Scene {
    * rather than a stool at somebody else's. It counts any link as driving, reads included, which
    * is the looser rule the server has since dropped, so it is not allowed to elect a third.
    */
-  #electHubs() {
-    const alive = new Set(this.agents.map((a) => a.id));
+  #electHubs(agents) {
+    const alive = new Set(agents.map((a) => a.id));
     const elected = this.hubIds.filter((id) => alive.has(id));
     if (elected.length > 1) return elected.slice(0, MAX_BARTENDERS);
 
@@ -333,7 +367,11 @@ export class Scene {
 
   /** The patch of bar this session is pouring behind, if it is a bartender at all. */
   #patchOfHub(id) {
-    return this.room?.patches.find((patch) => patch.hubId === id) ?? null;
+    for (const room of this.rooms) {
+      const patch = room.patches.find((p) => p.hubId === id);
+      if (patch) return patch;
+    }
+    return null;
   }
 
   /** The patch this session is sitting at, if it is on a stool. */
@@ -350,15 +388,23 @@ export class Scene {
 
   /** What this session's own bartender has exchanged with it. */
   #connOf(id) {
-    for (const patch of this.room?.patches ?? []) {
-      const conn = patch.conns.get(id);
-      if (conn) return conn;
+    for (const room of this.rooms) {
+      for (const patch of room.patches) {
+        const conn = patch.conns.get(id);
+        if (conn) return conn;
+      }
     }
     return null;
   }
 
+  /** The room whose table this session has, if it has one. */
+  #roomWithTable(id) {
+    return this.rooms.find((room) => room.tableOf.has(id)) ?? null;
+  }
+
   #seatOf(id) {
-    const slot = this.room?.plan.slots[this.tableOf.get(id)];
+    const room = this.#roomWithTable(id);
+    const slot = room?.plan.slots[room.tableOf.get(id)];
     return slot
       ? {
           tx: slot.tx,
@@ -372,8 +418,8 @@ export class Scene {
   }
 
   /** Where the n-th person in the line stands, wrapping to another row if the lobby fills up. */
-  #queueTile(index) {
-    const { ox, w, lobbyY, d } = this.room.plan;
+  #queueTile(room, index) {
+    const { ox, w, lobbyY, d } = room.plan;
     const perRow = Math.max(1, Math.floor((w - ENTRANCE_X - 1) / 2));
     return {
       x: ox + ENTRANCE_X + 2 * (index % perRow),
@@ -393,53 +439,96 @@ export class Scene {
     return { seats, signature: `${bar}|${seats}` };
   }
 
-  /** Build the room and the street it fronts, at the size the fleet currently needs. */
-  #buildDistrict(barSpec, seats) {
-    const plan = buildDistrict({ house: { key: 'house', name: HOUSE_NAME, seats, bar: barSpec } });
-    this.district = plan;
-    this.ground = buildGround(plan);
-    this.blocked = plan.blocked;
-    this.blockedStaff = plan.blockedStaff;
-    this.room = {
-      plan: plan.house,
-      silhouette: houseSilhouette(plan.house),
-      orders: [],
-      chefPose: null,
-      hostPose: null,
-      tenderPose: new Map(),
-      patches: plan.house.bar.patches.map((patch) => ({
+  /** Build the rooms and the street they front, at the sizes the fleets currently need. */
+  #buildDistrict(shapes) {
+    const district = buildDistrict({
+      houses: shapes.map((shape) => ({
+        key: shape.key,
+        name: shape.name,
+        seats: shape.seats,
+        bar: shape.barSpec,
+      })),
+    });
+    this.district = district;
+    this.ground = buildGround(district);
+    this.blocked = district.blocked;
+    this.blockedStaff = district.blockedStaff;
+    this.rooms = district.houses.map((plan) => {
+      const room = {
+        key: plan.key,
+        name: plan.name,
+        plan,
+        silhouette: houseSilhouette(plan),
+        orders: [],
+        chefPose: null,
+        hostPose: null,
+        chefAnchors: null,
+        tenderPose: new Map(),
+        patches: [],
+        waiters: plan.waiterSeats.slice(0, WAITERS).map((seat, index) => ({
+          index,
+          seat,
+          pal: waiterPalette(index),
+          task: null,
+          pos: null,
+        })),
+        /** workspaceId → index of the table it has been given, in this room */
+        tableOf: new Map(),
+        /** Whoever could not be seated here, in the order they arrived. */
+        queue: [],
+      };
+      room.patches = plan.bar.patches.map((patch) => ({
         ...patch,
+        room,
         conns: new Map(),
         workers: [],
-      })),
-      waiters: plan.house.waiterSeats.slice(0, WAITERS).map((seat, index) => ({
-        index,
-        seat,
-        pal: waiterPalette(index),
-        task: null,
-        pos: null,
-      })),
-    };
+      }));
+      return room;
+    });
     this.barOf = new Map();
     this.stoolOf = new Map();
-    this.tableOf = new Map();
-    this.queue = [];
     this.placement = new Map();
     this.movers = [];
     this.pours = [];
   }
 
   /**
-   * Who is behind the bar, who is on a stool, who is at a table and who is still in the line.
+   * Who is behind the bar, who is on a stool, who is at a table and who is still in the line —
+   * in every room. Each developer's sessions are seated in that developer's restaurant.
    *
    * A stool belongs to one bartender's patch and is kept for as long as that bartender keeps
    * driving the session; a table is given once and kept for the whole run. Nobody is ever
    * outside: the street is scenery now, and the only overflow is the line at the door.
    */
   #layout() {
-    const hubIds = this.#electHubs();
-    const hubSet = new Set(hubIds);
+    const groups = this.#groups();
+    this.roomOfId = new Map();
+    const shapes = groups.map((group) => this.#planRoom(group));
+    const signature = shapes.map((shape) => `${shape.key}=${shape.signature}`).join(';');
+    if (!this.district || signature !== this.shapeSignature) {
+      this.#buildDistrict(shapes);
+      this.shapeSignature = signature;
+    }
+    for (const shape of shapes) {
+      const room = this.rooms.find((r) => r.key === shape.key);
+      for (const agent of shape.agents) this.roomOfId.set(agent.id, room);
+    }
+    const fresh = this.placement.size === 0;
     const alive = new Set(this.agents.map((a) => a.id));
+    for (const id of [...this.placement.keys()]) {
+      if (!alive.has(id)) this.#forget(id);
+    }
+    for (const shape of shapes) {
+      const room = this.rooms.find((r) => r.key === shape.key);
+      if (room) this.#seatRoom(room, shape, fresh);
+    }
+  }
+
+  /** One developer's fleet, worked out into bartenders, crews and a room size. */
+  #planRoom(group) {
+    const hubIds = this.#electHubs(group.agents);
+    const hubSet = new Set(hubIds);
+    const alive = new Set(group.agents.map((a) => a.id));
 
     // Election order is precedence: a session two orchestrators have both driven belongs to the
     // longest-standing of them, and only what is left over can fill the patch next to it.
@@ -452,33 +541,47 @@ export class Scene {
       // between them has been seen yet: the tag is the orchestrator saying so. It takes a
       // stool without a conn — nothing has been exchanged — and gets one the moment it has.
       for (const id of this.#folderMatesOf(hubId)) {
-        if (hubSet.has(id) || claimed.has(id) || workers.includes(id)) continue;
+        if (!alive.has(id) || hubSet.has(id) || claimed.has(id) || workers.includes(id)) continue;
         workers.push(id);
       }
       for (const id of workers) claimed.add(id);
       crews.push({ hubId, conns, workers });
     }
 
-    const guests = this.agents.filter((a) => !hubSet.has(a.id));
+    const guests = group.agents.filter((a) => !hubSet.has(a.id));
     const tables = guests.filter((a) => !claimed.has(a.id)).length;
     const barSpec = crews.map((crew) => ({
       hubId: crew.hubId,
       stools: Math.max(3, Math.ceil(crew.workers.length / 3) * 3),
     }));
     const shape = this.#shapeOf(barSpec, tables);
+    return {
+      key: group.key,
+      name: group.name,
+      agents: group.agents,
+      hubIds,
+      crews,
+      guests,
+      barSpec,
+      seats: shape.seats,
+      signature: shape.signature,
+    };
+  }
 
-    if (!this.district || shape.signature !== this.shapeSignature) {
-      this.#buildDistrict(barSpec, shape.seats);
-      this.shapeSignature = shape.signature;
-    }
-    const fresh = this.placement.size === 0;
-    for (const patch of this.room.patches) {
+  /** Seat one room's fleet: stools, then tables, then the line at the door. */
+  #seatRoom(room, shape, fresh) {
+    const { hubIds, crews, guests } = shape;
+    for (const patch of room.patches) {
       patch.conns = crews.find((crew) => crew.hubId === patch.hubId)?.conns ?? new Map();
       patch.workers = [];
     }
-
-    for (const id of [...this.placement.keys()]) {
-      if (!alive.has(id)) this.#forget(id);
+    // A session that has changed hands between developers gives up whatever it held next door.
+    for (const agent of shape.agents) {
+      for (const other of this.rooms) {
+        if (other === room) continue;
+        other.tableOf.delete(agent.id);
+        other.queue = other.queue.filter((id) => id !== agent.id);
+      }
     }
 
     // ── the stools ──────────────────────────────────────────────────────────────────────────
@@ -486,14 +589,15 @@ export class Scene {
     // the seat is free before the next round of claims goes looking for one.
     const stillDriven = new Map();
     for (const crew of crews) for (const id of crew.workers) stillDriven.set(id, crew.hubId);
-    for (const id of [...this.barOf.keys()]) {
-      if (stillDriven.get(id) === this.barOf.get(id)) continue;
+    for (const agent of shape.agents) {
+      const id = agent.id;
+      if (!this.barOf.has(id) || stillDriven.get(id) === this.barOf.get(id)) continue;
       this.barOf.delete(id);
       this.stoolOf.delete(id);
     }
 
     for (const crew of crews) {
-      const patch = this.room.patches.find((p) => p.hubId === crew.hubId);
+      const patch = room.patches.find((p) => p.hubId === crew.hubId);
       if (!patch) continue; // no bar left for this one; its workers take tables instead
       const taken = new Set();
       for (const id of crew.workers) {
@@ -507,7 +611,7 @@ export class Scene {
         taken.add(index);
         this.barOf.set(id, crew.hubId);
         this.stoolOf.set(id, index);
-        this.tableOf.delete(id);
+        room.tableOf.delete(id);
       }
       patch.workers = crew.workers.filter((id) => this.barOf.get(id) === crew.hubId);
     }
@@ -515,15 +619,15 @@ export class Scene {
     // ── the tables ──────────────────────────────────────────────────────────────────────────
     const diners = guests.filter((a) => !this.barOf.has(a.id));
     const seated = new Set();
-    for (const [id, slot] of this.tableOf) {
+    for (const [id, slot] of room.tableOf) {
       if (this.barOf.has(id)) continue;
       seated.add(slot);
     }
     for (const agent of diners) {
-      if (this.tableOf.has(agent.id)) continue;
-      const slot = this.room.plan.slots.findIndex((_, i) => !seated.has(i));
+      if (room.tableOf.has(agent.id)) continue;
+      const slot = room.plan.slots.findIndex((_, i) => !seated.has(i));
       if (slot === -1) break; // full house: the rest wait at the podium
-      this.tableOf.set(agent.id, slot);
+      room.tableOf.set(agent.id, slot);
       seated.add(slot);
     }
 
@@ -538,24 +642,24 @@ export class Scene {
       if (resting || !hasSeat) line.push(agent.id);
     }
     const waiting = new Set(line);
-    this.queue = this.queue.filter((id) => waiting.has(id));
+    room.queue = room.queue.filter((id) => waiting.has(id));
     for (const id of line) {
-      if (this.queue.includes(id)) continue;
+      if (room.queue.includes(id)) continue;
       // Joining the back of the line, the way a queue works: nobody already in it has to move.
-      this.queue.push(id);
-      if (!fresh) this.room.hostPose = { type: 'wave', until: this.#now() + GREET_MS };
+      room.queue.push(id);
+      if (!fresh) room.hostPose = { type: 'wave', until: this.#now() + GREET_MS };
     }
 
     // ── putting everybody where they belong ─────────────────────────────────────────────────
     for (const hubId of hubIds) {
       const patch = this.#patchOfHub(hubId);
-      const agent = this.agents.find((a) => a.id === hubId);
+      const agent = shape.agents.find((a) => a.id === hubId);
       if (patch && agent) this.#place(agent, 'tending', patch.tender, fresh);
     }
     for (const agent of guests) {
-      const index = this.queue.indexOf(agent.id);
+      const index = room.queue.indexOf(agent.id);
       if (index >= 0) {
-        this.#place(agent, 'queued', this.#queueTile(index), fresh);
+        this.#place(agent, 'queued', this.#queueTile(room, index), fresh);
         continue;
       }
       const stoolTile = this.#stoolTileOf(agent.id);
@@ -582,13 +686,14 @@ export class Scene {
    */
   #place(agent, mode, tile, fresh) {
     const cur = this.placement.get(agent.id);
+    const room = this.#roomOf(agent.id) ?? this.rooms[0];
     if (!cur) {
       if (fresh) {
         this.placement.set(agent.id, { mode, tile });
         return;
       }
-      this.room.hostPose = { type: 'wave', until: this.#now() + GREET_MS };
-      this.#walk(agent, this.room.plan.door, tile, mode);
+      room.hostPose = { type: 'wave', until: this.#now() + GREET_MS };
+      this.#walk(agent, room.plan.door, tile, mode);
       return;
     }
     if (cur.mode === 'walking') return;
@@ -599,8 +704,11 @@ export class Scene {
   #forget(id) {
     this.barOf.delete(id);
     this.stoolOf.delete(id);
-    this.tableOf.delete(id);
-    this.queue = this.queue.filter((q) => q !== id);
+    for (const room of this.rooms) {
+      room.tableOf.delete(id);
+      room.queue = room.queue.filter((q) => q !== id);
+    }
+    this.roomOfId.delete(id);
     this.placement.delete(id);
     this.movers = this.movers.filter((m) => m.id !== id);
   }
@@ -672,7 +780,7 @@ export class Scene {
    */
   addEvents(events) {
     const now = this.#now();
-    if (!this.room) return;
+    if (!this.rooms.length) return;
     for (const event of events) {
       const fromPatch = event.fromId ? this.#patchOfHub(event.fromId) : null;
       const toPatch = event.toId ? this.#patchOfHub(event.toId) : null;
@@ -709,7 +817,7 @@ export class Scene {
       // Out of your kitchen to a table, and back again. A dispatch is a message whose text we
       // never saw — the session went from idle to working and nobody wrote down why — so it is
       // plated like any other order and served without a word.
-      const mine = !event.fromId && event.toId && this.tableOf.has(event.toId);
+      const mine = !event.fromId && event.toId && this.#roomWithTable(event.toId);
       if (mine && (carries || event.kind === 'dispatch')) {
         this.#order(
           'send',
@@ -719,7 +827,7 @@ export class Scene {
         );
         continue;
       }
-      if (event.kind === 'report' && !event.toId && this.tableOf.has(event.fromId)) {
+      if (event.kind === 'report' && !event.toId && this.#roomWithTable(event.fromId)) {
         this.#order('report', event.fromId, event, now);
         continue;
       }
@@ -729,7 +837,9 @@ export class Scene {
       }
     }
     if (this.toasts.length > 4) this.toasts.splice(0, this.toasts.length - 4);
-    if (this.room.orders.length > 12) this.room.orders.splice(0, this.room.orders.length - 12);
+    for (const room of this.rooms) {
+      if (room.orders.length > 12) room.orders.splice(0, room.orders.length - 12);
+    }
   }
 
   /** Send a glass down the bar, carrying one message with it. */
@@ -737,6 +847,8 @@ export class Scene {
     const stoolTile = this.#stoolTileOf(workerId);
     if (!stoolTile) return;
     this.pours.push({
+      room: patch.room,
+      x: patch.room.plan.bar.x,
       from: kind === 'report' ? stoolTile.y : patch.tender.y,
       to: kind === 'report' ? patch.tender.y : stoolTile.y,
       kind,
@@ -746,7 +858,7 @@ export class Scene {
       until: now + POUR_MS + POUR_HOLD,
     });
     if (kind !== 'report') {
-      this.room.tenderPose.set(patch.hubId, { type: 'pour', until: now + POUR_MS });
+      patch.room.tenderPose.set(patch.hubId, { type: 'pour', until: now + POUR_MS });
     }
   }
 
@@ -756,14 +868,16 @@ export class Scene {
    * is not plated twice.
    */
   #order(kind, workerId, event, now) {
+    const room = this.#roomWithTable(workerId);
+    if (!room) return;
     const duplicate =
-      this.room.orders.some((o) => o.kind === kind && o.workerId === workerId) ||
-      this.room.waiters.some(
+      room.orders.some((o) => o.kind === kind && o.workerId === workerId) ||
+      room.waiters.some(
         (wt) =>
           wt.task?.kind === kind && wt.task.workerId === workerId && now - wt.task.since < 6000,
       );
     if (duplicate) return;
-    this.room.orders.push({ kind, workerId, event, since: now });
+    room.orders.push({ kind, workerId, event, since: now });
   }
 
   /**
@@ -772,7 +886,10 @@ export class Scene {
    * table for the note and back to the kitchen with it.
    */
   #dispatchOrders(now) {
-    const room = this.room;
+    for (const room of this.rooms) this.#dispatchRoom(room, now);
+  }
+
+  #dispatchRoom(room, now) {
     while (room.orders.length) {
       const waiter = room.waiters.find((wt) => !wt.task);
       if (!waiter) return;
@@ -873,9 +990,9 @@ export class Scene {
     }
     this.pours = this.pours.filter((pour) => t < pour.until);
 
-    if (!this.room) return;
+    if (!this.rooms.length) return;
     this.#dispatchOrders(t);
-    for (const wt of this.room.waiters) {
+    for (const wt of this.rooms.flatMap((room) => room.waiters)) {
       if (!wt.task) continue;
       if (this.#advance(wt.task, t)) {
         wt.task = null;
@@ -943,9 +1060,9 @@ export class Scene {
    * grid is much wider than the picture and fitting to it would leave the world marooned in the
    * middle of the canvas.
    */
-  #bounds(zone = null) {
+  #bounds(zone = null, room = this.rooms[0]) {
     const dist = this.district;
-    const plan = this.room.plan;
+    const plan = room.plan;
     const points = [];
     let centre = null;
     const at = (x, y, z = 0) => points.push(iso(x, y, z));
@@ -971,25 +1088,26 @@ export class Scene {
       at(plan.ox, plan.d + 2);
       at(plan.ox + plan.w, plan.d + 2);
     } else {
-      // The default: the restaurant, centred, with the mountains showing over the city behind
-      // it and the road and the river in front. The city runs to the edge of the canvas on
-      // every side, so this is a framing rather than a fit — whatever does not fit is simply
-      // more city.
-      at(plan.ox - 3, 0, WALL_H + 52);
-      at(plan.ox + plan.w + 3, 0, WALL_H + 52);
-      at(plan.ox - 3, plan.d);
-      at(plan.ox + plan.w + 3, plan.d);
+      // The default: the whole row of restaurants, centred, with the mountains showing over
+      // the city behind them and the road and the river in front. The city runs to the edge of
+      // the canvas on every side, so this is a framing rather than a fit — whatever does not
+      // fit is simply more city.
+      const first = this.rooms[0].plan;
+      const last = this.rooms[this.rooms.length - 1].plan;
+      const x0 = first.ox;
+      const x1 = last.ox + last.w;
+      at(x0 - 3, 0, WALL_H + 52);
+      at(x1 + 3, 0, WALL_H + 52);
+      at(x0 - 3, plan.d);
+      at(x1 + 3, plan.d);
       const roomXs = points.map((p) => p.x);
       const roomYs = points.map((p) => p.y);
       centre = {
         x: (Math.min(...roomXs) + Math.max(...roomXs)) / 2,
         y: (Math.min(...roomYs) + Math.max(...roomYs)) / 2,
       };
-      points.push({ x: iso(plan.ox, plan.d).x, y: iso(plan.ox, 0).y - WALL_H - BACK_PEEK });
-      points.push({
-        x: iso(plan.ox + plan.w, plan.d).x,
-        y: iso(plan.ox + plan.w, dist.d).y + FRONT_PEEK,
-      });
+      points.push({ x: iso(x0, plan.d).x, y: iso(x0, 0).y - WALL_H - BACK_PEEK });
+      points.push({ x: iso(x1, plan.d).x, y: iso(x1, dist.d).y + FRONT_PEEK });
     }
     const xs = points.map((p) => p.x);
     const ys = points.map((p) => p.y);
@@ -1002,9 +1120,10 @@ export class Scene {
     };
   }
 
-  /** `1` the whole room, `2` the bar, `3` the tables, anything past that the street. */
+  /** `1` … `9`: the n-th restaurant along the street, whole. */
   fitZone(index) {
-    this.fit(false, ['room', 'bar', 'tables'][index] ?? 'street');
+    const room = this.rooms[index];
+    if (room) this.fit(false, 'room', room);
   }
 
   /**
@@ -1059,12 +1178,12 @@ export class Scene {
   }
 
   /** The zoom at which the whole district — or one part of it — fits the canvas. */
-  fit(immediate = false, zone = null) {
-    if (!this.room) return;
+  fit(immediate = false, zone = null, room = this.rooms[0]) {
+    if (!this.rooms.length) return;
     this.home = this.#homeView();
     let target;
     if (zone) {
-      const b = this.#bounds(zone);
+      const b = this.#bounds(zone, room);
       const cw = this.canvas.clientWidth;
       const ch = this.canvas.clientHeight;
       const zoom = this.#clampZoom(Math.min(cw / (b.maxX - b.minX), ch / (b.maxY - b.minY)) * 0.96);
@@ -1217,7 +1336,7 @@ export class Scene {
     this.canvas.addEventListener('pointerleave', () => {
       dragging = false;
       this.hoverId = null;
-      this.hoverRoom = false;
+      this.hoverRoom = null;
     });
     this.canvas.addEventListener('click', (e) => {
       if (moved >= 5) return;
@@ -1244,16 +1363,24 @@ export class Scene {
     });
   }
 
-  /** The room as the panel needs it: who is pouring for whom, and who is out on the floor. */
+  /**
+   * The rooms as the panel needs them: who is pouring for whom, and who is out on the floor, in
+   * each developer's restaurant — and the same flattened, for anything that asks about one.
+   */
   roomState() {
+    const rooms = this.rooms.map((room) => ({
+      key: room.key,
+      name: room.name,
+      agents: [...this.roomOfId].filter(([, r]) => r === room).map(([id]) => id),
+      bar: room.patches.map((patch) => ({ hubId: patch.hubId, members: patch.workers.slice() })),
+      tables: [...room.tableOf.keys()],
+      queue: room.queue.slice(),
+    }));
     return {
-      name: HOUSE_NAME,
-      bar: (this.room?.patches ?? []).map((patch) => ({
-        hubId: patch.hubId,
-        members: patch.workers.slice(),
-      })),
-      tables: [...this.tableOf.keys()],
-      queue: this.queue.slice(),
+      rooms,
+      bar: rooms.flatMap((room) => room.bar),
+      tables: rooms.flatMap((room) => room.tables),
+      queue: rooms.flatMap((room) => room.queue),
     };
   }
 
@@ -1268,10 +1395,10 @@ export class Scene {
     this.onSelect(id);
   }
 
-  /** Whether a screen point is over the building, tested against its real silhouette. */
+  /** Which building a screen point is over, tested against the real silhouettes; null for none. */
   #overRoom(sx, sy) {
-    if (!this.room) return false;
-    return inPolygon(this.#toWorld(sx, sy), this.room.silhouette);
+    const p = this.#toWorld(sx, sy);
+    return this.rooms.find((room) => inPolygon(p, room.silhouette))?.key ?? null;
   }
 
   // ── rendering ─────────────────────────────────────────────────────────────────────────────
@@ -1322,7 +1449,7 @@ export class Scene {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     // What is falling is on the glass, not in the street: it does not scale with the zoom. It
     // does stop at the room, whose silhouette goes along in the same screen pixels.
-    const shelter = this.room?.silhouette.map((p) => this.#toScreen(p.x, p.y)) ?? null;
+    const shelter = this.rooms.map((room) => room.silhouette.map((p) => this.#toScreen(p.x, p.y)));
     drawWeather(ctx, cw, ch, t, this.light, this.weather, shelter);
     this.#drawGlances(ctx, t);
     this.#drawLabels(ctx, byId);
@@ -1344,7 +1471,9 @@ export class Scene {
     // The city beside and behind the restaurant goes down before it: the back walls hide the
     // feet of what stands behind them, and nothing out there is ever in front of the room.
     for (const item of cityObjects(b, dist, view, t)) item.draw();
-    this.#drawInside(b, t, byId);
+    // Left to right. The side street between two rooms keeps them apart on screen, so the
+    // painter's order within each is all the order there is to get right.
+    for (const room of this.rooms) this.#drawInside(b, t, byId, room);
 
     const street = [];
     const out = (x, y, layer, draw) => street.push({ depth: (x + y) * 10 + layer, draw });
@@ -1362,14 +1491,13 @@ export class Scene {
     drawQuay(b, dist, view, t);
   }
 
-  /** Whether the kitchen has anything on: an order waiting, or a waiter out with one. */
-  #kitchenBusy() {
-    return this.room.orders.length > 0 || this.room.waiters.some((wt) => wt.task);
+  /** Whether a kitchen has anything on: an order waiting, or a waiter out with one. */
+  #kitchenBusy(room) {
+    return room.orders.length > 0 || room.waiters.some((wt) => wt.task);
   }
 
-  /** The restaurant, with everyone in it. */
-  #drawInside(b, t, byId) {
-    const room = this.room;
+  /** One restaurant, with everyone in it. */
+  #drawInside(b, t, byId, room) {
     const plan = room.plan;
     const { ox, w, d, gate, chef, lobbyY, entrance, podium, host, station, bar } = plan;
 
@@ -1392,8 +1520,8 @@ export class Scene {
       if (x !== gate) add(x, COUNTER_Y, 5, () => counter(b, x, COUNTER_Y));
     }
     add(gate, COUNTER_Y, 0, () => serviceBell(b, gate - 0.5, COUNTER_Y + 0.5, 18));
-    add(chef.x - 1, chef.y, 3, () => stove(b, chef.x - 1, chef.y, this.#kitchenBusy(), t));
-    add(chef.x, chef.y, 5, () => this.#drawChef(b, t));
+    add(chef.x - 1, chef.y, 3, () => stove(b, chef.x - 1, chef.y, this.#kitchenBusy(room), t));
+    add(chef.x, chef.y, 5, () => this.#drawChef(b, t, room));
     add(station.x, station.y, 5, () => cardTable(b, station.x, station.y, t));
     for (const wt of room.waiters) {
       const at = wt.task ? (wt.pos ?? wt.seat) : wt.seat;
@@ -1418,6 +1546,7 @@ export class Scene {
       add(bar.x, patch.tender.y, 6, () => barTaps(b, bar.x, patch.tender.y));
     }
     for (const pour of this.pours) {
+      if (pour.room !== room) continue;
       const k = Math.min(1, (t - pour.start) / POUR_MS);
       const y = pour.from + (pour.to - pour.from) * k;
       add(bar.x, y, 8, () => {
@@ -1443,7 +1572,7 @@ export class Scene {
     }
     add(entrance.x, lobbyY, 1, () => doormat(b, entrance.x, lobbyY));
     add(podium.x, podium.y, 5, () => hostStand(b, podium.x, podium.y, t));
-    add(host.x, host.y, 5, () => this.#drawHost(b, t));
+    add(host.x, host.y, 5, () => this.#drawHost(b, t, room));
     add(ox + w - 1, lobbyY + 1, 5, () => plant(b, ox + w - 1, lobbyY + 1));
     add(ox + FLOOR_X, KITCHEN_ROWS + 1, 5, () => plant(b, ox + FLOOR_X, KITCHEN_ROWS + 1));
 
@@ -1452,7 +1581,7 @@ export class Scene {
     // quiet night, and a restaurant with no tables in it is a broken picture.
     const diningAt = new Map();
     for (const [id, place] of this.placement) {
-      if (place.mode === 'seated') diningAt.set(this.tableOf.get(id), id);
+      if (place.mode === 'seated' && room.tableOf.has(id)) diningAt.set(room.tableOf.get(id), id);
     }
     plan.slots.forEach((slot, index) => {
       const seat = { tx: slot.tx, ty: slot.ty, cx: slot.tx, cy: slot.ty - 1 };
@@ -1464,7 +1593,7 @@ export class Scene {
 
     for (const [id, place] of this.placement) {
       const agent = byId.get(id);
-      if (!agent) continue;
+      if (!agent || this.#roomOf(id) !== room) continue;
       if (place.mode === 'stool') {
         add(place.tile.x, place.tile.y, 5, () => this.#drawPatron(b, agent, place.tile, t));
       } else if (place.mode === 'queued') {
@@ -1472,7 +1601,7 @@ export class Scene {
       }
     }
     for (const m of this.movers) {
-      if (!m.pos) continue;
+      if (!m.pos || this.#roomOf(m.id) !== room) continue;
       add(m.pos.x, m.pos.y, 6, () => this.#drawWalker(b, m, byId));
     }
 
@@ -1610,8 +1739,7 @@ export class Scene {
    * doing is whatever the kitchen is doing, which is however many messages of yours are on
    * their way out to the floor.
    */
-  #drawChef(b, t) {
-    const room = this.room;
+  #drawChef(b, t, room) {
     const { chef } = room.plan;
     const pal = chefPalette();
     const pose = room.chefPose && t < room.chefPose.until ? room.chefPose : null;
@@ -1625,7 +1753,7 @@ export class Scene {
       b.fillStyle = pal.b;
       b.fillRect(anchors.handX, anchors.handY - 6, 8, 3);
       tray(b, anchors.handX + 10, anchors.handY - 6, 'send');
-    } else if (this.#kitchenBusy()) {
+    } else if (this.#kitchenBusy(room)) {
       const stir = t / 300;
       const sx = anchors.headX - 12 + Math.round(Math.cos(stir) * 2);
       const sy = anchors.handY - 4 + Math.round(Math.sin(stir) * 1.5);
@@ -1651,7 +1779,7 @@ export class Scene {
     b.fillRect(anchors.headX - 2, anchors.headY + 11, 4, 6); // shirt front
     b.fillStyle = '#c9a227';
     b.fillRect(anchors.headX - 2, anchors.headY + 12, 4, 2); // bow tie
-    const pose = patch.hubId && this.room.tenderPose.get(patch.hubId);
+    const pose = patch.hubId && patch.room.tenderPose.get(patch.hubId);
     if (pose && t < pose.until) {
       drink(b, anchors.handX + 2, anchors.handY - 4, 'send');
     } else if (hub.status === 'working') {
@@ -1663,13 +1791,13 @@ export class Scene {
     }
   }
 
-  #drawHost(b, t) {
-    const { host } = this.room.plan;
+  #drawHost(b, t, room) {
+    const { host } = room.plan;
     const pal = hostPalette();
     const anchors = figure(b, host.x, host.y, pal, { facing: 'front' });
     b.fillStyle = '#1e1a1a';
     b.fillRect(anchors.headX - 2, anchors.headY + 12, 4, 2); // bow tie
-    const waving = this.room.hostPose && t < this.room.hostPose.until;
+    const waving = room.hostPose && t < room.hostPose.until;
     if (waving) {
       const wag = Math.round(Math.sin(t / 90) * 2);
       b.fillStyle = pal.b;
@@ -1744,7 +1872,7 @@ export class Scene {
   }
 
   #drawLabels(ctx, byId) {
-    if (!this.room) return;
+    if (!this.rooms.length) return;
     const zoomedIn = this.camera.zoom >= 2;
     const focus = this.hoverId ?? this.selectedId;
     // Several people at the bar stand a tile apart, which in the isometry is eight pixels of
@@ -1836,9 +1964,11 @@ export class Scene {
       ctx.restore();
     };
 
-    // The house title and the chef go down first, so every name that follows knows to dodge them.
-    this.#drawHouseSign(ctx, byId, placed);
-    this.#drawChefTag(ctx, placed);
+    // The house titles and the chefs go down first, so every name that follows knows to dodge them.
+    for (const room of this.rooms) {
+      this.#drawHouseSign(ctx, byId, placed, room);
+      this.#drawChefTag(ctx, placed, room);
+    }
 
     const k = this.camera.zoom;
     for (const [id, place] of this.placement) {
@@ -1860,17 +1990,21 @@ export class Scene {
     }
   }
 
-  /** A small permanent tag over the kitchen, because the chef has no name to hover for. */
-  #drawChefTag(ctx, placed) {
-    const anchors = this.room.chefAnchors;
+  /**
+   * A small permanent tag over each kitchen, because the chef has no name to hover for: the
+   * developer whose restaurant it is.
+   */
+  #drawChefTag(ctx, placed, room) {
+    const anchors = room.chefAnchors;
     if (!anchors) return;
     const head = this.#toScreen(anchors.headX, anchors.headY);
+    if (head.x < -120 || head.x > this.canvas.clientWidth + 120) return;
     const y = head.y - 14 * this.camera.zoom - 12;
     ctx.save();
     ctx.font = '700 9px ui-sans-serif, system-ui, sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    const tag = 'YOU · CHEF';
+    const tag = `${short(room.name, 18).toUpperCase()} · CHEF`;
     const w = ctx.measureText(tag).width + 14;
     roundRect(ctx, head.x - w / 2, y - 8, w, 16, 8);
     ctx.fillStyle = '#ffd166';
@@ -1882,21 +2016,21 @@ export class Scene {
   }
 
   /**
-   * The name over the restaurant, hung above its back wall where there is nothing to collide
-   * with, and under it the state of the whole fleet in one line: how many are at the bar being
-   * orchestrated, how many are at the tables waiting on you, and whether any of them is stuck.
+   * The name over a restaurant — its developer's — hung above its back wall where there is
+   * nothing to collide with, and under it the state of that fleet in one line: how many are at
+   * the bar being orchestrated, how many are at the tables waiting on the developer, and
+   * whether any of them is stuck.
    */
-  #drawHouseSign(ctx, byId, placed) {
-    const plan = this.room.plan;
+  #drawHouseSign(ctx, byId, placed, room) {
+    const plan = room.plan;
     const ridge = iso(plan.ox + plan.w / 2, 0, WALL_H + 30);
     const at = this.#toScreen(ridge.x, ridge.y);
     if (at.x < -180 || at.x > this.canvas.clientWidth + 180) return;
-    const count = (mode) => [...this.placement.values()].filter((p) => p.mode === mode).length;
-    const waiting = [...this.placement.keys()].filter(
-      (id) => byId.get(id)?.status === 'waiting',
-    ).length;
+    const here = [...this.placement].filter(([id]) => this.#roomOf(id) === room);
+    const count = (mode) => here.filter(([, p]) => p.mode === mode).length;
+    const waiting = here.filter(([id]) => byId.get(id)?.status === 'waiting').length;
     const sub = `${count('stool')} at the bar · ${count('seated')} dining · ${count('queued')} in line${
-      waiting ? ` · ${waiting} waiting on you` : ''
+      waiting ? ` · ${waiting} waiting` : ''
     }`;
 
     ctx.save();
@@ -1910,8 +2044,9 @@ export class Scene {
     const x = at.x - width / 2;
     const y = at.y - height - 8;
     ctx.fillStyle = 'rgba(13,18,26,0.92)';
-    ctx.strokeStyle = this.hoverRoom ? '#ffd166' : 'rgba(199,146,234,0.7)';
-    ctx.lineWidth = this.hoverRoom ? 1.6 : 1;
+    const hovered = this.hoverRoom === room.key;
+    ctx.strokeStyle = hovered ? '#ffd166' : 'rgba(199,146,234,0.7)';
+    ctx.lineWidth = hovered ? 1.6 : 1;
     roundRect(ctx, x, y, width, height, 8);
     ctx.fill();
     ctx.stroke();
@@ -2113,6 +2248,6 @@ function inPolygon(point, polygon) {
   return inside;
 }
 
-function short(name) {
-  return name.length > 34 ? `${name.slice(0, 33)}…` : name;
+function short(name, limit = 34) {
+  return name.length > limit ? `${name.slice(0, limit - 1)}…` : name;
 }

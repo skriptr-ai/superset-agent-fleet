@@ -43,19 +43,20 @@ export async function rpc(fn, args = {}) {
 }
 
 /**
- * Take in what a machine pushed under the label its key was issued to. `snapshot` is its latest world without events; `events` are
+ * Take in what a machine pushed under the label and owner its key was issued to. `snapshot` is its latest world without events; `events` are
  * the ones new since its last push; `heartbeat` says nothing changed and only the clock moves;
  * `pinChanges` are pins made on the machine's own page, applied before its set is read back.
  * Returns the pins the machine should hold, so a pin made on the public page reaches it.
  */
 export async function accept(
   host,
-  label,
+  { label, owner },
   { snapshot, events = [], pins = [], heartbeat = false, pinChanges = [] },
 ) {
   const answer = await rpc('fleet_push', {
     p_host: host,
     p_label: label,
+    p_owner: owner,
     p_snapshot: heartbeat ? null : { ...snapshot, hostName: host },
     p_events: events,
     p_pins: pins,
@@ -84,6 +85,8 @@ export async function snapshots(lastSeq = new Map()) {
       ...row.snapshot,
       sourceKey: row.name,
       hostName: row.name,
+      // Whose restaurant this machine's sessions fill.
+      owner: row.owner ?? row.name,
       pins,
       seenAt: seen,
       events: row.events ?? [],
