@@ -104,17 +104,18 @@ const MIME = {
 
 // Link history lives next to Superset's own state: it is derived from that state and useless
 // without it. Point AGENT_FLEET_STATE elsewhere, or at '' to forget everything on restart.
+const SUPERSET_STATE_ROOT = process.env.SUPERSET_HOME_DIR || join(homedir(), '.superset');
 const STATE_PATH =
   process.env.AGENT_FLEET_STATE === ''
     ? null
-    : (process.env.AGENT_FLEET_STATE ?? join(homedir(), '.superset', 'agent-fleet.json'));
+    : (process.env.AGENT_FLEET_STATE ?? join(SUPERSET_STATE_ROOT, 'agent-fleet.json'));
 
 // Where `bin/superset-send` writes what it sent. The default matches the wrapper's own, so an
 // orchestrator that uses it is picked up with nothing to configure on either side.
 const LOG_PATH =
   process.env.AGENT_FLEET_LOG === ''
     ? null
-    : (process.env.AGENT_FLEET_LOG ?? join(homedir(), '.superset', 'agent-fleet.jsonl'));
+    : (process.env.AGENT_FLEET_LOG ?? join(SUPERSET_STATE_ROOT, 'agent-fleet.jsonl'));
 
 // Claude Code's own session transcripts, which are where an MCP-driven orchestrator's calls
 // are recorded — the terminal never sees them. `CLAUDE_CONFIG_DIR` is Claude's own override;

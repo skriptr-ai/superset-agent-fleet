@@ -76,16 +76,40 @@ AGENT_FLEET_OWNER="Alex" AGENT_FLEET_WEATHER=off bun start
 | `AGENT_FLEET_TRANSCRIPTS`  | `~/.claude/projects`            | Claude transcript directory; empty disables this source                                   |
 
 `CLAUDE_CONFIG_DIR` changes the default transcript directory to its `projects`
-subdirectory. `SUPERSET_HOME_DIR` selects Superset's configuration directory.
+subdirectory. `SUPERSET_HOME_DIR` selects Superset's configuration directory and
+the default directory for `agent-fleet.json` and `agent-fleet.jsonl`. Explicit
+`AGENT_FLEET_STATE` and `AGENT_FLEET_LOG` values take precedence.
 An in-flight poll finishes before the next one starts, so a slow read can make
 updates less frequent than the configured interval.
 
 Keep the server on its default `127.0.0.1` address. Public tunnels and team hosting
 are outside this setup. The advanced `fleet` scope still serves the page locally;
 it uses your existing Superset access to read other hosts and is not team onboarding.
-Even in `host` scope, discovery lists account-visible host and workspace metadata to resolve
-relationships. Only this machine's terminal screens and local transcripts are read. A slow
-remote workspace listing can delay discovery.
+In `host` scope, discovery refreshes account-visible host and workspace metadata
+in the background to resolve relationships. Only this machine's terminal screens
+and local transcripts are read. Delayed metadata can delay a cross-host relationship;
+it does not need to finish before local workspace discovery returns.
+Background CLI reads leave capacity for foreground session reads. If you set
+`AGENT_FLEET_CLI_INFLIGHT=1`, host scope skips background host-name and remote
+relationship metadata discovery. Explicit fleet scope still reads remote hosts
+within that limit.
+
+### Virtual machines and sandboxes
+
+The collector observes hosts available through your Superset account. A VM or
+sandbox must run a Superset host with sessions visible through the CLI before
+Agent Fleet can discover them. Creating an arbitrary container or sandbox does
+not automatically make its processes Superset sessions.
+
+Use `AGENT_FLEET_SCOPE=fleet` on the Mac to read those hosts while keeping the page
+on localhost. A collector running inside a VM can instead use the default `host`
+scope for that VM alone. Local transcript enrichment only reads files on the
+collector's own machine; remote status and visible commands come from terminal
+reads. Idle and exited remote sessions are revisited in a bounded rotation.
+
+Read-only terminal access was verified against an existing development VM on
+September 15, 2026. New sandbox provisioning and live Linux service installation
+have not been verified.
 
 ## Privacy and local storage
 
@@ -123,6 +147,10 @@ Run these commands from the repository root.
 The installers use this checkout's `.env` and your existing Superset login. They
 do not require Doppler for local use. Installation with a live launchd or systemd
 service manager has not yet been verified. Use the foreground server first.
+Explicit supported configuration from the installer's shell is saved in the
+service and takes precedence over `.env`. Rerun the installer when changing those
+overrides or executable paths. Ambient agent workspace IDs and Superset API
+credentials are not copied into the service definition.
 
 On macOS:
 
@@ -198,6 +226,17 @@ filter in the top bar. Shell-only and archived workspaces do not get seats.
 
 The default scope is this machine. For a workspace on another host you own,
 use `AGENT_FLEET_SCOPE=fleet`. Offline or inaccessible hosts cannot be read.
+
+### A session says "last seen" or "awaiting updates"
+
+A failed host or terminal read retains the last successful observation. Stale
+sessions remain visible but do not count as currently working or waiting for you.
+Their terminal preview is the last captured snapshot. Recovery replaces it with
+a fresh observation; a timeout does not count as an agent finishing or spawning.
+An authoritative removal still removes the session.
+
+The connection notice distinguishes an empty account, a partial failure, and a
+view showing only stale observations. Filtering projects keeps that notice intact.
 
 ### The wrong organization appears
 

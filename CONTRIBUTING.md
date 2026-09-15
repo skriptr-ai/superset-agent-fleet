@@ -37,6 +37,13 @@ the scene for a consistent capture. The README images live in `docs/images/`.
 Test the live Superset integration when
 you change it, and say explicitly when you could not.
 
+For live-update regressions, run `bun test/browser-server.js` and open
+http://127.0.0.1:4414. Its fictional controls switch between live, partial, stale
+and empty data. Check filtering, keyboard navigation, terminal expansion and
+recovery while a conversation is selected. The **DOM regression checks** link
+runs browser assertions for focus, selection, scroll preservation and cached-city
+pixel equivalence. These browser checks are manual and separate from `bun test`.
+
 Keep the pull request focused. Describe the problem, what changes for the user,
 and the commands or browser checks you ran. Documentation-only changes do not need
 a new test. Never include `.env` files, host manifests, tokens, transcripts, or

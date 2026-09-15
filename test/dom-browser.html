@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+  <meta charset="utf-8" />
+  <title>Fleet DOM regression checks</title>
+  <style>
+    body {
+      background: #0b0f15;
+      color: #eef3f9;
+      font: 15px/1.6 system-ui;
+      padding: 24px;
+    }
+    .thread,
+    pre {
+      height: 100px;
+      overflow: auto;
+      width: 350px;
+    }
+    .msg {
+      min-height: 50px;
+    }
+    pre {
+      white-space: pre;
+    }
+    #results {
+      white-space: pre-wrap;
+    }
+  </style>
+  <h1>Live panel regression checks</h1>
+  <output id="results">Running…</output>
+  <section id="fixture"></section>
+  <script type="module">
+    import { patchHTML } from '/dom.js';
+    import { ViewCache } from '/view-cache.js';
+    import { buildDistrict } from '/district.js';
+    import { cityObjects } from '/city.js';
+    const root = document.querySelector('#fixture');
+    const results = [];
+    function assert(condition, name) {
+      results.push(`${condition ? 'PASS' : 'FAIL'} ${name}`);
+    }
+    const messages = Array.from(
+      { length: 12 },
+      (_, i) =>
+        `<div data-key="message-${i}" class="msg"><span>Message ${i} has selectable text</span></div>`,
+    ).join('');
+    const terminalLines = Array.from({ length: 60 }, (_, i) => `Terminal line ${i}`).join('\n');
+    const html = (extra = '', title = 'Agent') =>
+      `<button data-key="pin">Pin agent</button><h2>${title}</h2><div data-key="thread" class="thread">${messages}${extra}</div><details data-key="terminal" open><summary>Terminal</summary><pre>${terminalLines}</pre></details>`;
+    try {
+      patchHTML(root, html());
+      const thread = root.querySelector('.thread');
+      const terminal = root.querySelector('pre');
+      const pin = root.querySelector('button');
+      const message = root.querySelector('.msg span').firstChild;
+      pin.focus();
+      thread.scrollTop = 120;
+      terminal.scrollTop = 160;
+      const threadTop = thread.scrollTop;
+      const terminalTop = terminal.scrollTop;
+      const selection = window.getSelection();
+      const range = document.createRange();
+      range.setStart(message, 0);
+      range.setEnd(message, 9);
+      selection.removeAllRanges();
+      selection.addRange(range);
+      const selectedText = selection.toString();
+      patchHTML(
+        root,
+        html('<div data-key="new" class="msg">A new message arrived</div>', 'Agent is testing'),
+      );
+      assert(root.querySelector('.thread') === thread, 'Thread node survives new snapshots');
+      assert(root.querySelector('pre') === terminal, 'Terminal node survives new snapshots');
+      assert(
+        root.querySelector('button') === pin && document.activeElement === pin,
+        'Focused pin button survives new snapshots',
+      );
+      assert(
+        threadTop > 0 && thread.scrollTop === threadTop,
+        'Scrolled conversation stays at the same position',
+      );
+      assert(
+        terminalTop > 0 && terminal.scrollTop === terminalTop,
+        'Scrolled terminal stays at the same position',
+      );
+      assert(
+        selectedText.length > 0 && selection.toString() === selectedText,
+        'Selected conversation text survives new snapshots',
+      );
+      assert(root.querySelector('details').open, 'Expanded terminal stays expanded');
+      const cardHTML = (ids) =>
+        ids.map((id) => `<button data-id="${id}">Agent ${id}</button>`).join('');
+      patchHTML(root, cardHTML(['a', 'b', 'c']));
+      const b = root.querySelector('[data-id="b"]');
+      b.focus();
+      patchHTML(root, cardHTML(['c', 'b', 'a']));
+      assert(
+        root.children[1] === b && document.activeElement === b,
+        'Keyed reordering preserves the focused card',
+      );
+      patchHTML(root, cardHTML(['b']));
+      assert(
+        root.children.length === 1 && root.firstChild === b,
+        'Removing other cards preserves the remaining card',
+      );
+      const groups = (atBar) =>
+        `<section data-key="bar">${atBar ? '<button data-id="worker">Worker</button>' : ''}</section><section data-key="tables">${atBar ? '' : '<button data-id="worker">Worker</button>'}</section>`;
+      patchHTML(root, groups(true));
+      root.querySelector('[data-id="worker"]').focus();
+      patchHTML(root, groups(false));
+      assert(
+        document.activeElement?.getAttribute('data-id') === 'worker',
+        'Focus follows the same agent between bar and table groups',
+      );
+      let mutations = 0;
+      const observer = new MutationObserver((records) => {
+        mutations += records.length;
+      });
+      observer.observe(root, {
+        subtree: true,
+        childList: true,
+        attributes: true,
+        characterData: true,
+      });
+      patchHTML(root, groups(false));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      observer.disconnect();
+      assert(mutations === 0, 'An identical snapshot makes no DOM mutations');
+      const canvas = document.createElement('canvas');
+      canvas.width = 640;
+      canvas.height = 480;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      const district = buildDistrict({ house: { key: 'alex', name: 'Alex', seats: 8 } });
+      const view = { x0: -700, y0: -500, x1: 700, y1: 550, zoom: 0.45 };
+      const cache = new ViewCache();
+      const plan = cache.read(district, view, () => cityObjects(ctx, district, view, 0));
+      const pixels = (items, time) => {
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.setTransform(0.45, 0, 0, 0.45, 320, 225);
+        for (const item of items) item.draw(time);
+        return ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+      };
+      for (const time of [0, 1234, 5678]) {
+        const cached = pixels(plan, time);
+        const rebuilt = pixels(cityObjects(ctx, district, view, time), time);
+        assert(
+          cached.every((value, i) => value === rebuilt[i]),
+          `Cached city pixels match a freshly built city at frame time ${time}`,
+        );
+      }
+    } catch (error) {
+      results.push(`FAIL ${error.stack}`);
+    }
+    const failures = results.filter((line) => line.startsWith('FAIL')).length;
+    document.querySelector('#results').textContent =
+      `${results.length - failures} passed, ${failures} failed\n\n${results.join('\n')}`;
+    document.body.dataset.result = failures ? 'fail' : 'pass';
+  </script>
+</html>

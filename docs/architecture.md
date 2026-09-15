@@ -25,6 +25,17 @@ forces the CLI. Optional lifecycle hook bindings have no CLI equivalent, so that
 information is absent on fallback. A Superset update can also change CLI output;
 the fallback is not a guarantee of compatibility with every release.
 
+Failed direct connections are retried after a bounded delay so a host restart or
+rotated manifest token can recover. An unavailable optional procedure has its own
+cooldown and does not disable every direct read. Empty-host identity remains
+provisional until workspace discovery confirms the registered host ID.
+
+Each agent carries `observedAt`, `stale`, and `readError`. Failed discovery and
+terminal reads preserve the last complete observation without inferring lifecycle
+events. Discovery records which host lists were authoritative, so an unavailable
+host is distinguishable from a removed host or an empty workspace. Deferred
+relationship evidence has a size limit and expires if metadata never arrives.
+
 A fresh account does not need seeded projects, company credentials, or a deployment.
 An account with no agent sessions produces an empty restaurant. Agent Fleet reads
 what the selected Superset account can access; it does not register an account or
@@ -84,3 +95,13 @@ Run `bun run demo` to use fictional activity without reading a real account.
 Refresh the page after frontend edits. `bun run dev` restarts the live server when
 server files change. For tests and review expectations, see
 [CONTRIBUTING.md](../CONTRIBUTING.md).
+
+The drawer patches existing DOM nodes to preserve focus, selected text and scroll
+position during updates. Closed drawers skip rendering. The canvas reuses the
+visible city drawing plan while the district and camera stay unchanged; animated
+draw calls still receive the current frame time.
+
+Add `?debug=1` to show local rendering diagnostics: median and p95 CPU time per
+frame, animation callback cadence, and phase costs. These are browser CPU samples,
+not GPU measurements or a cross-machine benchmark. Compare the same scene, camera,
+viewport, and animation state.

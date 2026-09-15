@@ -623,7 +623,7 @@ export function cityObjects(ctx, district, view, t) {
       if (!block) continue;
       for (const b of block.buildings) {
         if (b.maxX < view.x0 || b.minX > view.x1 || b.maxY < view.y0 || b.minY > view.y1) continue;
-        items.push({ depth: b.key, draw: () => drawBuilding(ctx, b, t) });
+        items.push({ depth: b.key, draw: (time = t) => drawBuilding(ctx, b, time) });
       }
     }
   }
@@ -636,7 +636,10 @@ export function cityObjects(ctx, district, view, t) {
     const p = iso(x + 0.5, y + 0.5);
     if (p.x < view.x0 - 40 || p.x > view.x1 + 40 || p.y < view.y0 - 20 || p.y > view.y1 + 80)
       return;
-    items.push({ depth: propKey(x, y, buildings), draw: () => streetProp(ctx, { kind, x, y }, t) });
+    items.push({
+      depth: propKey(x, y, buildings),
+      draw: (time = t) => streetProp(ctx, { kind, x, y }, time),
+    });
   };
   for (let i = city.first - 1; i <= city.last; i++) {
     const road = city.colRoad(i);

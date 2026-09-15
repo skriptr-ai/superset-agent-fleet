@@ -18,7 +18,11 @@
     </header>
 
     <main>
-      <canvas id="world"></canvas>
+      <canvas
+        id="world"
+        role="img"
+        aria-label="Your agent fleet as a pixel-art restaurant. Open the Agents panel to browse conversations with the keyboard."
+      ></canvas>
       <section id="connection-notice" class="connection-notice" role="status" aria-live="polite">
         <strong>Opening your restaurant…</strong>
         <p>Connecting to Superset.</p>
@@ -29,16 +33,17 @@
         <span id="handle-text">Agents</span>
       </button>
 
-      <aside id="drawer" class="drawer" aria-hidden="true">
+      <aside id="drawer" class="drawer" aria-hidden="true" inert aria-label="Agent conversations">
         <div class="drawer-head">
           <span id="drawer-title">Agents</span>
           <button id="close" type="button" aria-label="Close">✕</button>
         </div>
         <div id="panel"></div>
         <p class="keys">
-          <kbd>Esc</kbd> close · <kbd>S</kbd> panel · <kbd>F</kbd> fit · <kbd>1</kbd> room ·
-          <kbd>2</kbd> bar · <kbd>3</kbd> tables · <kbd>4</kbd> street · <kbd>R</kbd> check-ins ·
-          <kbd>+</kbd><kbd>−</kbd> zoom
+          <kbd>Esc</kbd> back / close · <kbd>S</kbd> panel · <kbd>F</kbd> fit · <kbd>1</kbd>–<kbd
+            >9</kbd
+          >
+          restaurant · <kbd>R</kbd> check-ins · <kbd>+</kbd><kbd>−</kbd> zoom
         </p>
       </aside>
     </main>

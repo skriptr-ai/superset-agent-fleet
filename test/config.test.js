@@ -54,4 +54,17 @@ describe('local configuration', () => {
     expect(isFleetHealth({ ok: false, service: 'superset-agent-fleet' })).toBe(false);
     expect(isFleetHealth({ ok: true, service: 'superset-agent-fleet' })).toBe(true);
   });
+
+  test('unsafe bindings fail before doctor or service installation reports success', () => {
+    for (const bind of ['0.0.0.0', '::', '0:0:0:0:0:0:0:0']) {
+      expect(() => readConfig({ AGENT_FLEET_BIND: bind, AGENT_FLEET_TOKEN: 'fixture' })).toThrow(
+        'specific address',
+      );
+    }
+    expect(() => readConfig({ AGENT_FLEET_BIND: '192.0.2.10' })).toThrow('AGENT_FLEET_TOKEN');
+    expect(readConfig({ AGENT_FLEET_BIND: '192.0.2.10', AGENT_FLEET_TOKEN: 'fixture' }).bind).toBe(
+      '192.0.2.10',
+    );
+    expect(readConfig({ AGENT_FLEET_BIND: '0:0:0:0:0:0:0:1' }).bind).toBe('::1');
+  });
 });

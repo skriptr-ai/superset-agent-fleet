@@ -15,6 +15,9 @@ const ASSETS = new Set([
   'district.js',
   'street.js',
   'city.js',
+  'ui-state.js',
+  'dom.js',
+  'view-cache.js',
 ]);
 const MIME = {
   '.html': 'text/html; charset=utf-8',

@@ -391,8 +391,8 @@ function planHouse(spec, ox, w, lobbyY, rd) {
   }
 
   return {
-    key: spec.key,
-    name: spec.name,
+    key: spec.key ?? '',
+    name: spec.name || spec.key || 'This machine',
     ox,
     w,
     d: rd,
