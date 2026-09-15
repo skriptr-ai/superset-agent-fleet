@@ -91,6 +91,7 @@ import {
 import { drawCityGround, cityObjects, cityStreetProps, drawQuay } from './city.js';
 import { Lighting, lightAt, pinnedTime, DEFAULT_PLACE } from './daylight.js';
 import { drawWeather, drawCloudShadows } from './weather.js';
+import { ViewCache } from './view-cache.js';
 
 /**
  * Whose dining room has a pole in it, by the name over the door, lowercased. The whole fleet
@@ -171,6 +172,7 @@ export class Scene {
     this.shapeSignature = '';
     this.district = null;
     this.ground = null;
+    this.cityView = new ViewCache();
     /**
      * The restaurants, left to right, one per developer: each its plan, its kitchen crew, its
      * bar patches, its order book, its tables and its line at the door.
@@ -204,6 +206,26 @@ export class Scene {
     this.home = null;
     /** Override to freeze or scrub the animation clock; null means real time. */
     this.clock = null;
+    this.metrics = null;
+    if (new URLSearchParams(window.location.search).get('debug') === '1') {
+      const output = document.createElement('output');
+      output.id = 'fleet-performance';
+      output.className = 'performance-metrics';
+      output.setAttribute('aria-label', 'Local rendering diagnostics');
+      output.textContent = 'Measuring frame CPU and cadence…';
+      document.body.append(output);
+      this.metrics = {
+        cpu: [],
+        cadence: [],
+        sky: [],
+        world: [],
+        chrome: [],
+        previous: null,
+        displayed: 0,
+        total: 0,
+        output,
+      };
+    }
     /**
      * The sky. The town is drawn for the night and lit up to the hour by the tone map; the
      * place is where the sun is worked out over, the weather what it has to get through.
@@ -218,12 +240,16 @@ export class Scene {
     this.#bindInput();
     this.#resize();
     window.addEventListener('resize', () => {
-      this.#resize();
       // The window's new shape gives the opening view a new size; whatever the camera was
       // doing, it must still be inside it.
-      if (this.rooms.length) this.#rehome();
+      if (this.#resize() && this.rooms.length) this.#rehome();
     });
-    requestAnimationFrame(() => this.#frame());
+    // A wrapped header can resize the canvas without a window resize event.
+    this.resizeObserver = new ResizeObserver(() => {
+      if (this.#resize() && this.rooms.length) this.#rehome();
+    });
+    this.resizeObserver.observe(this.canvas);
+    requestAnimationFrame((timestamp) => this.#frame(timestamp));
   }
 
   #now() {
@@ -257,6 +283,9 @@ export class Scene {
    */
   setWorld(agents, hubIds, links, owners = []) {
     this.agents = agents;
+    if (this.selectedId && !agents.some((agent) => agent.id === this.selectedId))
+      this.selectedId = null;
+    if (this.hoverId && !agents.some((agent) => agent.id === this.hoverId)) this.hoverId = null;
     // The server sends every orchestrator it has elected, most-driving first. A single id is
     // still accepted so an older server, or a console poke, keeps working.
     this.hubIds = Array.isArray(hubIds) ? hubIds : hubIds ? [hubIds] : [];
@@ -1307,8 +1336,12 @@ export class Scene {
 
   #resize() {
     const dpr = window.devicePixelRatio || 1;
-    this.canvas.width = this.canvas.clientWidth * dpr;
-    this.canvas.height = this.canvas.clientHeight * dpr;
+    const width = Math.floor(this.canvas.clientWidth * dpr);
+    const height = Math.floor(this.canvas.clientHeight * dpr);
+    if (this.canvas.width === width && this.canvas.height === height) return false;
+    this.canvas.width = width;
+    this.canvas.height = height;
+    return true;
   }
 
   #bindInput() {
@@ -1417,15 +1450,37 @@ export class Scene {
 
   // ── rendering ─────────────────────────────────────────────────────────────────────────────
 
-  #frame() {
+  #frame(timestamp) {
+    const started = this.metrics ? performance.now() : 0;
     const t = this.#now();
     this.#stepCamera();
     this.#stepMovers(t);
     this.#render(t);
-    requestAnimationFrame(() => this.#frame());
+    if (this.metrics) this.#measureFrame(started, timestamp);
+    requestAnimationFrame((next) => this.#frame(next));
+  }
+
+  #measureFrame(started, timestamp) {
+    const metrics = this.metrics;
+    metrics.cpu.push(performance.now() - started);
+    if (metrics.previous !== null) metrics.cadence.push(timestamp - metrics.previous);
+    metrics.previous = timestamp;
+    metrics.total++;
+    if (metrics.cpu.length > 240) metrics.cpu.shift();
+    if (metrics.cadence.length > 240) metrics.cadence.shift();
+    for (const phase of ['sky', 'world', 'chrome'])
+      if (metrics[phase].length > 240) metrics[phase].shift();
+    if (timestamp - metrics.displayed < 1000) return;
+    metrics.displayed = timestamp;
+    const percentile = (values, fraction) => {
+      const sorted = [...values].sort((a, b) => a - b);
+      return (sorted[Math.floor((sorted.length - 1) * fraction)] ?? 0).toFixed(2);
+    };
+    metrics.output.textContent = `Frame CPU median ${percentile(metrics.cpu, 0.5)} ms · p95 ${percentile(metrics.cpu, 0.95)} ms | Frame cadence median ${percentile(metrics.cadence, 0.5)} ms | ${metrics.cpu.length} samples · ${metrics.total} frames | Phase CPU median: sky ${percentile(metrics.sky, 0.5)} ms · world ${percentile(metrics.world, 0.5)} ms · labels/weather ${percentile(metrics.chrome, 0.5)} ms`;
   }
 
   #render(t) {
+    const started = this.metrics ? performance.now() : 0;
     const cw = this.canvas.clientWidth;
     const ch = this.canvas.clientHeight;
     const dpr = window.devicePixelRatio || 1;
@@ -1439,6 +1494,8 @@ export class Scene {
     // the chrome underneath keeps its own colours.
     this.light = lightAt(this.skyTime(), this.place, this.weather);
     this.lighting.set(this.light);
+    const skyDone = this.metrics ? performance.now() : 0;
+    if (this.metrics) this.metrics.sky.push(skyDone - started);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.fillStyle = this.lighting.shade('#0e1219');
     ctx.fillRect(0, 0, cw, ch);
@@ -1460,6 +1517,9 @@ export class Scene {
       this.lighting.end();
     }
 
+    const worldDone = this.metrics ? performance.now() : 0;
+    if (this.metrics) this.metrics.world.push(worldDone - skyDone);
+
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     // What is falling is on the glass, not in the street: it does not scale with the zoom. It
     // does stop at the room, whose silhouette goes along in the same screen pixels.
@@ -1470,6 +1530,7 @@ export class Scene {
     this.#drawBubbles(ctx, t, byId);
     this.#drawTooltip(ctx, byId);
     this.#drawToasts(ctx, byId, t);
+    if (this.metrics) this.metrics.chrome.push(performance.now() - worldDone);
   }
 
   /**
@@ -1484,7 +1545,11 @@ export class Scene {
     drawGround(b, this.ground);
     // The city beside and behind the restaurant goes down before it: the back walls hide the
     // feet of what stands behind them, and nothing out there is ever in front of the room.
-    for (const item of cityObjects(b, dist, view, t)) item.draw();
+    const city = this.cityView.read(dist, view, () => ({
+      items: cityObjects(b, dist, view, t),
+      street: cityStreetProps(dist, view),
+    }));
+    for (const item of city.items) item.draw(t);
     // Left to right. The side street between two rooms keeps them apart on screen, so the
     // painter's order within each is all the order there is to get right.
     for (const room of this.rooms) this.#drawInside(b, t, byId, room);
@@ -1492,7 +1557,7 @@ export class Scene {
     const street = [];
     const out = (x, y, layer, draw) => street.push({ depth: (x + y) * 10 + layer, draw });
     for (const prop of dist.props) out(prop.x, prop.y, 5, () => streetProp(b, prop, t));
-    for (const prop of cityStreetProps(dist, view)) {
+    for (const prop of city.street) {
       out(prop.x, prop.y, 5, () => streetProp(b, prop, t));
     }
     for (const traffic of this.#traffic(t)) {
@@ -1725,22 +1790,22 @@ export class Scene {
   #drawDiner(b, agent, seat, t) {
     b.save();
     if (this.#emphasis(agent.id) < 1) b.globalAlpha = 0.6;
-    if (agent.status === 'exited') b.globalAlpha *= 0.5;
+    if (agent.status === 'exited' || agent.stale) b.globalAlpha *= 0.5;
     const anchors = this.#person(b, agent, seat.cx, seat.cy, { facing: 'front', z: 6 });
     seat.anchors = anchors;
-    if (agent.status === 'waiting') this.#raiseHand(b, agent, anchors, t);
+    if (!agent.stale && agent.status === 'waiting') this.#raiseHand(b, agent, anchors, t);
     b.restore();
   }
 
   #drawTable(b, agent, seat, t) {
-    table(b, seat.tx, seat.ty, agent?.status ?? 'idle', t);
+    table(b, seat.tx, seat.ty, agent?.stale ? 'idle' : (agent?.status ?? 'idle'), t);
     if (!agent) return;
     const c = iso(seat.tx + 0.5, seat.ty + 0.5, 12);
     this.hitboxes.push({ id: agent.id, x: c.x - 16, y: c.y - 10, w: 32, h: 20 });
     const a = seat.anchors;
     if (!a) return;
-    if (agent.status === 'working') fork(b, a.handX + 2, a.handY - 2, t);
-    if (agent.status === 'waiting') {
+    if (!agent.stale && agent.status === 'working') fork(b, a.handX + 2, a.handY - 2, t);
+    if (!agent.stale && agent.status === 'waiting') {
       serviceBell(b, seat.tx + 0.8, seat.ty + 0.25, 18);
       exclaim(b, a.headX + 11, a.headY - 6, t);
     }
@@ -1754,13 +1819,13 @@ export class Scene {
   #drawPatron(b, agent, tile, t) {
     b.save();
     if (this.#emphasis(agent.id) < 1) b.globalAlpha = 0.6;
-    if (agent.status === 'exited') b.globalAlpha *= 0.5;
+    if (agent.status === 'exited' || agent.stale) b.globalAlpha *= 0.5;
     const anchors = this.#person(b, agent, tile.x, tile.y, { facing: 'back', flip: true, z: 11 });
-    if (agent.status === 'working') {
+    if (!agent.stale && agent.status === 'working') {
       const lift = Math.round(Math.abs(Math.sin(t / 300)) * 3);
       drink(b, anchors.handX, anchors.handY - 2 - lift, 'send');
     }
-    if (agent.status === 'waiting') {
+    if (!agent.stale && agent.status === 'waiting') {
       this.#raiseHand(b, agent, anchors, t);
       exclaim(b, anchors.headX + 11, anchors.headY - 6, t);
     }
@@ -1770,10 +1835,10 @@ export class Scene {
   #drawQueued(b, agent, tile, t) {
     b.save();
     if (this.#emphasis(agent.id) < 1) b.globalAlpha = 0.6;
-    if (agent.status === 'exited') b.globalAlpha *= 0.5;
+    if (agent.status === 'exited' || agent.stale) b.globalAlpha *= 0.5;
     // Turned toward the rope: the line is people waiting to be shown in, not people watching you.
     const anchors = this.#person(b, agent, tile.x, tile.y, { facing: 'back' });
-    if (agent.status === 'waiting') this.#raiseHand(b, agent, anchors, t);
+    if (!agent.stale && agent.status === 'waiting') this.#raiseHand(b, agent, anchors, t);
     b.restore();
   }
 
@@ -1832,9 +1897,9 @@ export class Scene {
     b.fillStyle = '#c9a227';
     b.fillRect(anchors.headX - 2, anchors.headY + 12, 4, 2); // bow tie
     const pose = patch.hubId && patch.room.tenderPose.get(patch.hubId);
-    if (pose && t < pose.until) {
+    if (!hub.stale && pose && t < pose.until) {
       drink(b, anchors.handX + 2, anchors.handY - 4, 'send');
-    } else if (hub.status === 'working') {
+    } else if (!hub.stale && hub.status === 'working') {
       // Polishing a glass, which is what a bartender does while it is thinking.
       const wipe = Math.round(Math.sin(t / 240) * 2);
       drink(b, anchors.handX + 1, anchors.handY - 3, 'report');
@@ -1934,7 +1999,9 @@ export class Scene {
     const clear = (x, y, w, h) =>
       !placed.some((p) => x < p.x + p.w && x + w > p.x && y < p.y + p.h && y + h > p.y);
     const draw = (agent, at, isHub, conn, tight) => {
-      const status = STATUS[agent.status] ?? STATUS.idle;
+      const status = agent.stale
+        ? { color: '#8b9cb3', label: `last seen ${agent.status}` }
+        : (STATUS[agent.status] ?? STATUS.idle);
       const full = focus === agent.id;
       const issue = issueOf(agent.name, agent.branch);
       const limit = full ? 34 : tight ? 14 : 20;
@@ -2080,7 +2147,9 @@ export class Scene {
     if (at.x < -180 || at.x > this.canvas.clientWidth + 180) return;
     const here = [...this.placement].filter(([id]) => this.#roomOf(id) === room);
     const count = (mode) => here.filter(([, p]) => p.mode === mode).length;
-    const waiting = here.filter(([id]) => byId.get(id)?.status === 'waiting').length;
+    const waiting = here.filter(
+      ([id]) => !byId.get(id)?.stale && byId.get(id)?.status === 'waiting',
+    ).length;
     const sub = `${count('stool')} at the bar · ${count('seated')} dining · ${count('queued')} in line${
       waiting ? ` · ${waiting} waiting` : ''
     }`;
@@ -2191,15 +2260,18 @@ export class Scene {
     if (!id || id === this.selectedId) return;
     const agent = byId.get(id);
     if (!agent) return;
-    const status = STATUS[agent.status] ?? STATUS.idle;
+    const status = agent.stale
+      ? { color: '#8b9cb3', sub: `last seen ${agent.status}` }
+      : (STATUS[agent.status] ?? STATUS.idle);
     ctx.save();
     const wrap = (text, font, color, max) => {
       ctx.font = font;
       return wrapText(ctx, text, 236, max).map((line) => ({ text: line, font, color }));
     };
     const doing = agent.doing;
-    const working = agent.status === 'working' && doing;
-    const dur = agent.status === 'working' ? plainActivity(agent.activity ?? '') : '';
+    const working = !agent.stale && agent.status === 'working' && doing;
+    const dur =
+      !agent.stale && agent.status === 'working' ? plainActivity(agent.activity ?? '') : '';
     const state = `${status.sub}${dur ? ` · ${dur}` : ''}`;
     const now =
       working && doing.phase !== 'thinking'

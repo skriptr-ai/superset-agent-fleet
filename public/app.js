@@ -13,6 +13,8 @@ import {
   turnStory,
 } from './draw.js';
 import { DEFAULT_PLACE } from './daylight.js';
+import { patchHTML } from './dom.js';
+import { connectionState, validSnapshot } from './ui-state.js';
 
 const scene = new Scene(document.getElementById('world'));
 const demo = window.fleetDemo;
@@ -65,6 +67,11 @@ try {
 let links = [];
 let firstSnapshot = true;
 let terminalOpen = false;
+let currentWorld = { tick: 0, error: null, state: 'connecting', hosts: null };
+let panelAgentId = null;
+const pendingPins = new Set();
+const pinErrors = new Map();
+const openedTerminals = new WeakSet();
 
 /** Every event this page has seen, by id. Threads are built from this, not from the server. */
 const events = new Map();
@@ -151,16 +158,12 @@ function renderProjects() {
   );
   if (projectFilter && !counts.has(projectFilter)) projectFilter = '';
   const pill = (value, label, n) =>
-    `<button type="button" data-project="${escape(value)}" class="${projectFilter === value ? 'on' : ''}">${escape(label)}<small>${n}</small></button>`;
+    `<button type="button" data-project="${escape(value)}" aria-pressed="${projectFilter === value}" class="${projectFilter === value ? 'on' : ''}">${escape(label)}<small>${n}</small></button>`;
   const html = [
     pill('', 'All sessions', allAgents.length),
     ...names.map((n) => pill(n, n === NO_PROJECT ? 'No project' : n, counts.get(n))),
   ].join('');
-  if (els.projects.innerHTML !== html) {
-    els.projects.innerHTML = html;
-    for (const b of els.projects.querySelectorAll('button'))
-      b.addEventListener('click', () => setFilter(b.dataset.project));
-  }
+  patchHTML(els.projects, html);
 }
 
 function setFilter(value) {
@@ -172,12 +175,15 @@ function setFilter(value) {
   }
   renderProjects();
   applyFilter();
+  updateScene();
   scene.select(null);
+  scene.fit();
+  renderHeader(currentWorld);
+}
+
+function updateScene() {
   scene.setWorld(agents, hubIds, links, owners);
   room = scene.roomState();
-  scene.fit();
-  renderHeader({ tick: lastTick, error: null, hosts: null });
-  renderPanel();
 }
 
 function threadFor(id) {
@@ -228,6 +234,10 @@ function threadFor(id) {
 // Status in plain words: the agent CLIs' own chrome ("esc to interrupt", token counts) is
 // for the person at that terminal, not for a room full of them.
 function statusPill(agent) {
+  if (agent.stale)
+    return (
+      '<span class="pill stale"><i></i>last seen ' + escape(agent.status ?? 'idle') + '</span>'
+    );
   const s = STATUS[agent.status] ?? STATUS.idle;
   const dur = agent.status === 'working' ? plainActivity(agent.activity ?? '') : '';
   const text =
@@ -324,6 +334,8 @@ function taskLine(agent) {
  * gets the phases the turn went through; a card does not, because a list of them is a wall.
  */
 function nowLine(agent, { story: withStory = false } = {}) {
+  if (agent.stale)
+    return `<p class="now stale" title="${escape(agent.readError ?? 'Waiting for a fresh update')}">Updates paused${agent.observedAt ? ` · last seen ${ago(agent.observedAt)}` : ''}</p>`;
   const doing = agent.doing;
   if (agent.status === 'working' && doing) {
     const color = PHASE_COLOR[doing.phase] ?? PHASE_COLOR.thinking;
@@ -350,7 +362,7 @@ function card(agent) {
   const drives = isHub ? (patchOf(agent.id)?.members.length ?? 0) : 0;
   return `
     <article class="card ${isHub ? 'hub' : ''} ${agent.id === scene.selectedId ? 'on' : ''}"
-             data-id="${agent.id}" style="--c:${(STATUS[agent.status] ?? STATUS.idle).color}">
+             data-id="${escape(agent.id)}" role="button" tabindex="0" aria-label="Open conversation with ${escape(agent.name)}" style="--c:${(STATUS[agent.status] ?? STATUS.idle).color}">
       <header>
         ${isHub ? '<span class="tag">Bartender</span>' : ''}
         <h4>${heading(agent)}</h4>
@@ -443,13 +455,13 @@ function renderList() {
     );
   }
 
-  els.panel.innerHTML = houses.length
-    ? houses.join('')
-    : '<p class="hint">Your restaurant is ready. Start an agent in a Superset workspace and it will appear here.</p>';
-
-  for (const node of els.panel.querySelectorAll('.card')) {
-    node.addEventListener('click', () => scene.select(node.dataset.id));
-  }
+  patchHTML(
+    els.panel,
+    houses.length
+      ? houses.join('')
+      : '<p class="hint">Your restaurant is ready. Start an agent in a Superset workspace and it will appear here.</p>',
+  );
+  panelAgentId = null;
 }
 
 function bubbleRow(e, agent) {
@@ -464,7 +476,7 @@ function bubbleRow(e, agent) {
       ? ` → ${issueOf(nameOf(e.toId)).key ?? short(nameOf(e.toId), 26)}`
       : '';
   return `
-    <div class="msg ${mine ? 'from-hub' : 'from-agent'} k-${e.kind}">
+    <div data-key="${escape(e.id)}" class="msg ${mine ? 'from-hub' : 'from-agent'} k-${escape(e.kind)}">
       <div class="who">${escape(who)}${escape(to)}<time>${clock(e.at)}</time></div>
       <div class="body">${escape(e.text)}</div>
     </div>`;
@@ -490,11 +502,15 @@ function renderThread(agent) {
     }
     flushReads();
     if (e.kind === 'waiting') {
-      html.push(`<div class="sys waiting">waiting on you<time>${clock(e.at)}</time></div>`);
+      html.push(
+        `<div data-key="${escape(e.id)}" class="sys waiting">waiting on you<time>${clock(e.at)}</time></div>`,
+      );
     } else if (isBriefing(e)) {
       html.push(bubbleRow(e, agent));
     } else if (e.kind === 'spawn') {
-      html.push(`<div class="sys">joined the fleet<time>${clock(e.at)}</time></div>`);
+      html.push(
+        `<div data-key="${escape(e.id)}" class="sys">joined the fleet<time>${clock(e.at)}</time></div>`,
+      );
     } else if (e.text) {
       html.push(bubbleRow(e, agent));
     }
@@ -514,11 +530,21 @@ function renderAgent(id) {
   }
   const lead = agent.terminals.find((t) => t.id === agent.leadTerminalId) ?? agent.terminals[0];
   const thread = els.panel.querySelector('.thread');
-  const stick = !thread || thread.scrollHeight - thread.scrollTop - thread.clientHeight < 40;
+  const changedAgent = panelAgentId !== id;
+  const stick =
+    changedAgent || !thread || thread.scrollHeight - thread.scrollTop - thread.clientHeight < 40;
+  const terminal = els.panel.querySelector('pre');
+  const terminalVisible = els.panel.querySelector('details.terminal')?.open;
+  const followTerminal =
+    changedAgent ||
+    !terminal ||
+    (terminalVisible && terminal.scrollHeight - terminal.scrollTop - terminal.clientHeight < 40);
 
-  els.panel.innerHTML = `
-    <button class="back" type="button">← all agents</button>
-    <div class="agent-head" style="--c:${(STATUS[agent.status] ?? STATUS.idle).color}">
+  patchHTML(
+    els.panel,
+    `
+    <button data-key="back" class="back" type="button">← all agents</button>
+    <div data-key="head-${escape(id)}" class="agent-head" style="--c:${(STATUS[agent.status] ?? STATUS.idle).color}">
       ${isBartender(id) ? `<span class="tag">Bartender${pins.has(id) ? ' · pinned' : ''}</span>` : ''}
       <h2>${heading(agent)}</h2>
       <div class="meta">
@@ -535,34 +561,20 @@ function renderAgent(id) {
       ${agent.queued.length ? `<p class="unread">✉ ${agent.queued.length} unread — will be read after the current tool call</p>` : ''}
       ${pinButton(id)}
     </div>
-    <div class="thread">${renderThread(agent)}</div>
-    <details class="terminal" ${terminalOpen ? 'open' : ''}>
-      <summary>Live terminal <small>${escape(short(agent.worktreePath ?? '', 60))}</small></summary>
+    <div data-key="thread-${escape(id)}" class="thread" tabindex="0" aria-label="Conversation history">${renderThread(agent)}</div>
+    <details data-key="terminal-${escape(id)}" class="terminal" ${terminalOpen ? 'open' : ''}>
+      <summary>${agent.stale ? 'Last terminal snapshot' : 'Live terminal'} <small>${escape(short(agent.worktreePath ?? '', 60))}</small></summary>
       <pre>${escape(lead?.screen ?? '')}</pre>
-    </details>`;
-
-  els.panel.querySelector('.back').addEventListener('click', () => scene.select(null));
-  const pin = els.panel.querySelector('.pin');
-  if (pin) {
-    pin.addEventListener('click', async () => {
-      pin.disabled = true;
-      try {
-        await setPinned(id, !pins.has(id));
-      } catch (err) {
-        pin.disabled = false;
-        pin.textContent = `could not save: ${err.message}`;
-      }
-    });
-  }
-  const details = els.panel.querySelector('details');
-  details.addEventListener('toggle', () => {
-    terminalOpen = details.open;
-  });
+    </details>`,
+  );
   const pre = els.panel.querySelector('pre');
-  if (pre) pre.scrollTop = pre.scrollHeight; // a terminal's interesting end is the bottom
+  if (pre && terminalOpen && followTerminal) {
+    pre.scrollTop = pre.scrollHeight;
+    openedTerminals.add(pre);
+  }
   const next = els.panel.querySelector('.thread');
   if (stick) next.scrollTop = next.scrollHeight;
-  else if (thread) next.scrollTop = thread.scrollTop;
+  panelAgentId = id;
 }
 
 /**
@@ -586,13 +598,14 @@ function pinButton(id) {
     : elected
       ? 'Stays behind the bar even when its commands are no longer on screen.'
       : 'Puts this session behind the bar as a bartender, whatever the screens show.';
-  return `<button class="pin ${pinned ? 'on' : ''}" type="button" title="${escape(why)}">${pinned ? '📌 ' : ''}${label}</button>`;
+  return `<button data-key="pin" class="pin ${pinned ? 'on' : ''}" type="button" ${pendingPins.has(id) ? 'disabled' : ''} title="${escape(why)}">${pinned ? '📌 ' : ''}${label}</button>${pinErrors.has(id) ? `<p class="pin-error" role="alert">Could not save: ${escape(pinErrors.get(id))}</p>` : ''}`;
 }
 
 /** Tell the home server; the answering snapshot redraws the room. */
 async function setPinned(id, pinned) {
   const res = await fetch(demo?.team ? '/api/hub?team=1' : '/api/hub', {
     method: 'POST',
+    signal: AbortSignal.timeout(10000),
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ id, pinned }),
   });
@@ -608,6 +621,7 @@ async function setPinned(id, pinned) {
 }
 
 function renderPanel() {
+  if (!drawerOpen()) return;
   if (scene.selectedId) {
     renderAgent(scene.selectedId);
     els.drawerTitle.textContent = 'Thread';
@@ -618,9 +632,14 @@ function renderPanel() {
 }
 
 function renderHeader(world) {
-  const count = (status) => agents.filter((a) => a.status === status).length;
+  const count = (status) => agents.filter((a) => !a.stale && a.status === status).length;
+  const staleCount = agents.filter((a) => a.stale).length;
   const waiting = count('waiting');
-  els.live.className = `live ${world.error ? 'bad' : 'on'}`;
+  const state = world.state ?? 'connecting';
+  const warning = ['partial', 'stale'].includes(state);
+  els.live.className = `live ${state === 'unavailable' ? 'bad' : warning ? 'warning' : state === 'connecting' ? '' : 'on'}`;
+  els.live.setAttribute('aria-label', `Connection: ${state}`);
+  document.body.dataset.connection = state;
   // `world.error` already names the host each complaint came from — with several servers
   // reporting, "CLI error" alone would not say which machine was having the trouble.
   els.live.title = world.error
@@ -629,35 +648,116 @@ function renderHeader(world) {
   // The handle doubles as the status line: how many, how many busy, and whether anyone needs you.
   els.handleText.innerHTML = `<b>${agents.length}</b> agents · ${count('working')} working${
     waiting ? ` · <span class="warn">${waiting} waiting on you</span>` : ''
-  }`;
+  }${staleCount ? ` · <span class="warn">${staleCount} awaiting updates</span>` : ''}`;
   const notice = document.getElementById('connection-notice');
-  notice.hidden = !world.error && allAgents.length > 0;
-  notice.innerHTML = world.error
-    ? '<strong>We cannot read your agents right now.</strong><p>Keep Superset open. Run <code>bun run doctor</code> in the project folder to check your connection.</p>'
-    : '<strong>Your restaurant is ready.</strong><p>Start an agent in a Superset workspace and it will appear here. Need help? Run <code>bun run doctor</code>.</p>';
+  notice.hidden = state === 'live';
+  notice.classList.toggle('partial', warning);
+  const help = cloudMode
+    ? 'The connection will retry automatically.'
+    : 'Keep Superset open. Run <code>bun run doctor</code> in the project folder to check your connection.';
+  const messages = {
+    connecting: '<strong>Opening your restaurant…</strong><p>Connecting to Superset.</p>',
+    empty:
+      '<strong>Your restaurant is ready.</strong><p>Start an agent in a Superset workspace and it will appear here.</p>',
+    partial:
+      '<strong>Some updates are unavailable.</strong><p>Connected agents are still shown. We will keep trying.</p>',
+    stale:
+      '<strong>Reconnecting. Showing the last update.</strong><p>Agent activity may have changed.</p>',
+    unavailable: `<strong>We cannot read your agents right now.</strong><p>${help}</p>`,
+  };
+  patchHTML(notice, messages[state] ?? '');
+  notice.title = world.error ?? '';
 }
 
 function openDrawer(open) {
   document.body.classList.toggle('drawer-open', open);
   els.handle.setAttribute('aria-expanded', String(open));
   els.drawer.setAttribute('aria-hidden', String(!open));
+  els.drawer.inert = !open;
+  if (open) renderPanel();
+  else if (els.drawer.contains(document.activeElement)) els.handle.focus();
 }
 const drawerOpen = () => document.body.classList.contains('drawer-open');
 
 // Picking someone in the room opens the drawer on their thread.
 scene.onSelect = (id) => {
-  renderPanel();
   if (id) openDrawer(true);
+  else renderPanel();
 };
 
 let showReads = true;
-let lastTick = 0;
+els.projects.addEventListener('click', (event) => {
+  const button = event.target.closest('[data-project]');
+  if (button) setFilter(button.dataset.project);
+});
+function returnToList() {
+  const id = scene.selectedId;
+  scene.select(null);
+  [...els.panel.querySelectorAll('.card')]
+    .find((node) => node.dataset.id === id)
+    ?.focus({ preventScroll: true });
+}
+els.panel.addEventListener('click', async (event) => {
+  const card = event.target.closest('.card');
+  if (card) {
+    scene.select(card.dataset.id);
+    els.panel.querySelector('.back')?.focus({ preventScroll: true });
+  }
+  if (event.target.closest('.back')) {
+    returnToList();
+  }
+  const pin = event.target.closest('.pin');
+  if (pin && scene.selectedId && !pendingPins.has(scene.selectedId)) {
+    const id = scene.selectedId;
+    pendingPins.add(id);
+    pinErrors.delete(id);
+    pin.disabled = true;
+    renderPanel();
+    try {
+      await setPinned(id, !pins.has(id));
+    } catch (err) {
+      pinErrors.set(id, err.message);
+    } finally {
+      pendingPins.delete(id);
+      pin.disabled = false;
+      renderPanel();
+    }
+  }
+});
+els.panel.addEventListener('keydown', (event) => {
+  const card = event.target.closest('.card');
+  if (card && ['Enter', ' '].includes(event.key)) {
+    event.preventDefault();
+    card.click();
+  }
+});
+els.panel.addEventListener(
+  'toggle',
+  (event) => {
+    if (event.target.matches('details.terminal')) {
+      terminalOpen = event.target.open;
+      const pre = event.target.querySelector('pre');
+      if (terminalOpen && pre && !openedTerminals.has(pre)) {
+        pre.scrollTop = pre.scrollHeight;
+        openedTerminals.add(pre);
+      }
+    }
+  },
+  true,
+);
 els.handle.addEventListener('click', () => openDrawer(!drawerOpen()));
 els.close.addEventListener('click', () => openDrawer(false));
 window.addEventListener('keydown', (e) => {
-  if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+  if (
+    e.target.matches('input, select, textarea') ||
+    e.target.isContentEditable ||
+    e.ctrlKey ||
+    e.metaKey ||
+    e.altKey
+  )
+    return;
   if (e.key === 'Escape') {
-    if (scene.selectedId) scene.select(null);
+    if (scene.selectedId) returnToList();
     else openDrawer(false);
   }
   if (e.key === 'f' || e.key === 'F') scene.fit();
@@ -689,6 +789,7 @@ window.addEventListener('keydown', (e) => {
 const sources = new Map();
 /** @type {Map<string, string>} source key -> why it is not reporting, if it is not */
 const sourceTrouble = new Map();
+const staleSources = new Set();
 
 /** A peer entry may carry its token in the URL; turn it into a stream address. */
 function streamUrl(peer, path) {
@@ -731,11 +832,20 @@ function merged() {
     const owner = snapshot.owner || snapshot.hostName || '';
     if (owner) ownerNames.set(owner, owner);
     for (const raw of snapshot.agents ?? []) {
-      const agent = { ...raw, owner: raw.owner ?? owner };
+      const agent = {
+        ...raw,
+        stale: raw.stale || staleSources.has(key),
+        owner: raw.owner ?? owner,
+      };
       // An instance running ON an agent's machine reports it as local, and knows more about it
       // than a fleet-scoped instance reading the same room over the cloud. Prefer that one.
       const held = agentsById.get(agent.id);
-      if (!held || (held.remote && !agent.remote)) agentsById.set(agent.id, agent);
+      if (
+        !held ||
+        (held.stale && !agent.stale) ||
+        (Boolean(held.stale) === Boolean(agent.stale) && held.remote && !agent.remote)
+      )
+        agentsById.set(agent.id, agent);
     }
     for (const id of snapshot.hubIds ?? (snapshot.hubId ? [snapshot.hubId] : [])) hubs.add(id);
     for (const link of snapshot.links ?? []) {
@@ -772,12 +882,25 @@ function merged() {
     links: [...linkByPair.values()],
     fresh,
     error: trouble.length ? trouble.join(' · ') : null,
-    hosts: `${sources.size}/${sources.size + sourceTrouble.size} hosts`,
+    state: connectionState({
+      count: agentsById.size,
+      errors: trouble.length > 0,
+      reconnecting: staleSources.size > 0 || [...agentsById.values()].some((agent) => agent.stale),
+      healthy: [...agentsById.values()].some((agent) => !agent.stale)
+        ? 1
+        : [...sources].filter(
+            ([key, snapshot]) =>
+              !staleSources.has(key) && !snapshot.error && !snapshot.agents?.length,
+          ).length,
+      received: sources.size > 0 || !firstSnapshot,
+    }),
+    hosts: `${[...sources.keys()].filter((key) => !staleSources.has(key)).length} hosts connected`,
   };
 }
 
 function redraw() {
   const world = merged();
+  currentWorld = world;
   allAgents = world.agents;
   owners = world.owners;
   hubIds = world.hubIds;
@@ -789,13 +912,11 @@ function redraw() {
   links = world.links;
   renderProjects();
   applyFilter();
-  scene.setWorld(agents, hubIds, links, owners);
-  room = scene.roomState();
+  updateScene();
   // The stream replays its backlog on connect so threads have history; animating all of
   // it would fire a minute of traffic at once, so only live ticks reach the scene.
   if (!firstSnapshot) scene.addEvents(world.fresh.filter((e) => !e.replay));
-  firstSnapshot = false;
-  lastTick = world.tick;
+  if (sources.size) firstSnapshot = false;
   renderHeader(world);
   renderPanel();
 }
@@ -818,7 +939,17 @@ function listen(peer) {
   let grace = null;
   source.onmessage = (message) => {
     if (demo?.paused && !firstSnapshot) return;
-    const snapshot = JSON.parse(message.data);
+    let snapshot;
+    try {
+      snapshot = JSON.parse(message.data);
+    } catch {
+      fail('received an unreadable update');
+      return;
+    }
+    if (!validSnapshot(snapshot)) {
+      fail('received an incomplete update');
+      return;
+    }
     // A cloud stream carries every machine, each snapshot naming its own; a machine's stream
     // carries just that machine and names nothing.
     const key = snapshot.sourceKey ?? streamKey;
@@ -827,26 +958,34 @@ function listen(peer) {
     grace = null;
     sourceTrouble.delete(streamKey);
     sourceTrouble.delete(key);
+    staleSources.delete(key);
+    staleSources.delete(streamKey);
     // The server this page came from is home; every other host's rooms are away.
     if (!peer && !cloudMode && snapshot.hostName) homeHost = snapshot.hostName;
     sources.set(key, snapshot);
     redraw();
   };
-  source.onerror = () => {
+  function fail(reason) {
     // A cloud function ends its stream on a clock and the browser reconnects at once, which
     // is not a host going away; so a moment's grace before the rooms are taken down. A host
     // that is really gone must not keep its rooms silently: the snapshots are dropped so the
     // world stops claiming to know, and the reason is said out loud.
     if (grace) return;
+    sourceTrouble.set(streamKey, reason);
+    for (const key of spoken) staleSources.add(key);
+    staleSources.add(streamKey);
+    redraw();
     grace = setTimeout(() => {
       for (const key of spoken) sources.delete(key);
-      sourceTrouble.set(streamKey, 'not reachable — reconnecting');
+      sourceTrouble.set(streamKey, reason);
       redraw();
     }, STREAM_GRACE_MS);
-  };
+  }
+  source.onerror = () => fail('connection interrupted; reconnecting');
 }
 
 async function connect() {
+  let peers = [];
   try {
     const res = await fetch('/api/peers');
     if (res.status === 401) {
@@ -854,13 +993,23 @@ async function connect() {
       location.href = '/api/login';
       return;
     }
-    const { peers, cloud } = await res.json();
-    cloudMode = cloud === true;
-    listen(null);
-    for (const peer of peers ?? []) listen(peer);
+    const body = await res.json();
+    cloudMode = body.cloud === true;
+    peers = Array.isArray(body.peers) ? body.peers : [];
   } catch {
     // No peer list is the normal single-host case, not a failure.
-    listen(null);
+  }
+  listen(null);
+  for (const peer of new Set(peers)) {
+    try {
+      const url = new URL(peer);
+      if (typeof peer !== 'string' || !['http:', 'https:'].includes(url.protocol))
+        throw new Error('invalid peer');
+      listen(peer);
+    } catch {
+      sourceTrouble.set('peer configuration', 'an additional host has an invalid address');
+      redraw();
+    }
   }
 }
 

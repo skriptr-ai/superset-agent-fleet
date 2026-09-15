@@ -31,10 +31,20 @@ describe('isolated demo', () => {
     const res = await fetch(new URL('/api/stream?team=1', base));
     expect(res.headers.get('content-type')).toBe('text/event-stream');
     const reader = res.body.getReader();
-    const { value } = await reader.read();
-    const message = JSON.parse(new TextDecoder().decode(value).slice(6).trim());
-    expect(message.agents).toHaveLength(24);
-    await reader.cancel();
+    // HTTP chunks need not align with SSE frames, especially for the larger team fixture.
+    const decoder = new TextDecoder();
+    let frame = '';
+    try {
+      while (!frame.includes('\n\n')) {
+        const { value, done } = await reader.read();
+        if (done) throw new Error('Stream ended before its first event');
+        frame += decoder.decode(value, { stream: true });
+      }
+      const message = JSON.parse(frame.split('\n\n')[0].slice(6));
+      expect(message.agents).toHaveLength(24);
+    } finally {
+      await reader.cancel();
+    }
   });
 
   test('pins stay in memory, reject unknown agents, and cannot be posted cross-origin', async () => {

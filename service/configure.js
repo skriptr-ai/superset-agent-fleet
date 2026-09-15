@@ -1,8 +1,9 @@
 #!/usr/bin/env bun
 // Render service definitions without shell interpolation of paths or credentials.
-import { writeFile } from 'node:fs/promises';
+import { writeFile, rename } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { readConfig, healthURL } from '../lib/config.js';
 import { checkHealth } from '../scripts/doctor.js';
 
@@ -16,12 +17,20 @@ const clean = (value) => {
     throw new Error('Service paths and values must not contain newlines or NUL');
   return value;
 };
-const unitQuote = (value, exec = false) =>
-  `"${clean(value)
-    .replace(/\\/g, '\\\\')
-    .replace(/"/g, '\\"')
-    .replace(/%/g, '%%')
-    .replace(/\$/g, exec ? '$$$$' : '$$')}"`;
+const unitQuote = (value) =>
+  `"${clean(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/%/g, '%%')}"`;
+
+// These directives take a literal path, unlike Environment and ExecStart's words.
+// Quoting a WorkingDirectory makes its first character a quote, not '/'.
+const unitPath = (value) => clean(value).replace(/%/g, '%%');
+
+// A reinstall must replace a previously permissive file with a private one before
+// writing credentials. Rename also leaves the old definition intact on write failure.
+export async function writeServiceFile(target, content) {
+  const temporary = `${target}.${randomUUID()}.tmp`;
+  await writeFile(temporary, content, { mode: 0o600, flag: 'wx' });
+  await rename(temporary, target);
+}
 
 export function renderService({
   platform,
@@ -49,9 +58,14 @@ export function renderService({
   const args = config
     ? [doppler, 'run', '-p', project, '-c', config, '--', bun, 'server.js']
     : [bun, 'server.js'];
-  // Persist only explicitly supplied settings. Bun loads the repo's .env at service startup.
+  // Persist configuration, never the terminal/workspace/auth context inherited from
+  // an agent that happened to invoke the installer. Bun loads .env at service startup.
+  const supersetSettings = new Set(['SUPERSET_HOME_DIR', 'SUPERSET_TRANSPORT']);
   const settings = Object.fromEntries(
-    Object.entries(env).filter(([key]) => /^(AGENT_FLEET_|SUPERSET_|CLAUDE_CONFIG_DIR$)/.test(key)),
+    Object.entries(env).filter(
+      ([key]) =>
+        key.startsWith('AGENT_FLEET_') || supersetSettings.has(key) || key === 'CLAUDE_CONFIG_DIR',
+    ),
   );
   // Exact executable path also honors a CLI installed outside the usual shell PATH.
   const variables = { PATH: path, HOME: home, ...settings, SUPERSET_CLI: superset };
@@ -81,17 +95,19 @@ export function renderService({
     );
   }
   if (platform !== 'linux') throw new Error('Service installation supports macOS and Linux');
+  // ':' disables ExecStart environment expansion; paths and arguments are already
+  // resolved. A literal '$' in an executable path must not become '$$' on disk.
   return `[Unit]
 Description=Superset Agent Fleet
 After=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=${unitQuote(repo)}
+WorkingDirectory=${unitPath(/[\\\s]$/.test(repo) ? `${repo}/` : repo)}
 ${Object.entries(variables)
   .map(([key, value]) => `Environment=${unitQuote(`${key}=${value}`)}`)
   .join('\n')}
-${config ? `EnvironmentFile=-${unitQuote(join(home, '.config/superset-agent-fleet/doppler.env'))}\n` : ''}ExecStart=${args.map((arg) => unitQuote(arg, true)).join(' ')}
+${config ? `EnvironmentFile=-${unitPath(join(home, '.config/superset-agent-fleet/doppler.env'))}\n` : ''}ExecStart=:${args.map(unitQuote).join(' ')}
 Restart=on-failure
 RestartSec=5
 
@@ -123,7 +139,7 @@ if (import.meta.main) {
       process.exitCode = state === 'fleet' ? 0 : state === 'free' ? 1 : 2;
     } else if (action === 'render') {
       // Avoid freezing .env values into a service: it must reread the file after edits.
-      await writeFile(
+      await writeServiceFile(
         target,
         renderService({
           platform,
@@ -137,7 +153,6 @@ if (import.meta.main) {
           token: process.env.DOPPLER_TOKEN || '',
           env: process.env,
         }),
-        { mode: 0o600 },
       );
     } else throw new Error('Unknown service helper action');
   } catch (error) {
