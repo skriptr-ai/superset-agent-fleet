@@ -15,6 +15,8 @@ import {
 import { DEFAULT_PLACE } from './daylight.js';
 
 const scene = new Scene(document.getElementById('world'));
+const demo = window.fleetDemo;
+if (demo) scene.clock = demo.clock;
 // A console handle, so a scene can be poked at without a live orchestrator to hand.
 window.fleet = { scene };
 
@@ -267,7 +269,7 @@ function evidenceChip(agent) {
 
 const ago = (at) => {
   if (!at) return 'earlier';
-  const s = Math.max(0, Math.round((Date.now() - at) / 1000));
+  const s = Math.max(0, Math.round(((demo?.at ?? Date.now()) - at) / 1000));
   if (s < 60) return `${s}s ago`;
   if (s < 3600) return `${Math.round(s / 60)} min ago`;
   return `${Math.round(s / 360) / 10} h ago`;
@@ -443,7 +445,7 @@ function renderList() {
 
   els.panel.innerHTML = houses.length
     ? houses.join('')
-    : '<p class="hint">No restaurant is open yet: nothing has reported.</p>';
+    : '<p class="hint">Your restaurant is ready. Start an agent in a Superset workspace and it will appear here.</p>';
 
   for (const node of els.panel.querySelectorAll('.card')) {
     node.addEventListener('click', () => scene.select(node.dataset.id));
@@ -589,12 +591,20 @@ function pinButton(id) {
 
 /** Tell the home server; the answering snapshot redraws the room. */
 async function setPinned(id, pinned) {
-  const res = await fetch('/api/hub', {
+  const res = await fetch(demo?.team ? '/api/hub?team=1' : '/api/hub', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ id, pinned }),
   });
   if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+  if (demo?.paused) {
+    const result = await res.json();
+    const snapshot = sources.get('');
+    if (snapshot) {
+      sources.set('', { ...snapshot, pins: result.pins, hubIds: result.hubIds, events: [] });
+      redraw();
+    }
+  }
 }
 
 function renderPanel() {
@@ -620,6 +630,11 @@ function renderHeader(world) {
   els.handleText.innerHTML = `<b>${agents.length}</b> agents · ${count('working')} working${
     waiting ? ` · <span class="warn">${waiting} waiting on you</span>` : ''
   }`;
+  const notice = document.getElementById('connection-notice');
+  notice.hidden = !world.error && allAgents.length > 0;
+  notice.innerHTML = world.error
+    ? '<strong>We cannot read your agents right now.</strong><p>Keep Superset open. Run <code>bun run doctor</code> in the project folder to check your connection.</p>'
+    : '<strong>Your restaurant is ready.</strong><p>Start an agent in a Superset workspace and it will appear here. Need help? Run <code>bun run doctor</code>.</p>';
 }
 
 function openDrawer(open) {
@@ -677,7 +692,7 @@ const sourceTrouble = new Map();
 
 /** A peer entry may carry its token in the URL; turn it into a stream address. */
 function streamUrl(peer, path) {
-  if (!peer) return path;
+  if (!peer) return demo?.team ? `${path}?team=1` : path;
   const url = new URL(peer);
   const token = url.searchParams.get('token');
   return `${url.origin}${path}${token ? `?token=${encodeURIComponent(token)}` : ''}`;
@@ -802,6 +817,7 @@ function listen(peer) {
   const spoken = new Set();
   let grace = null;
   source.onmessage = (message) => {
+    if (demo?.paused && !firstSnapshot) return;
     const snapshot = JSON.parse(message.data);
     // A cloud stream carries every machine, each snapshot naming its own; a machine's stream
     // carries just that machine and names nothing.
