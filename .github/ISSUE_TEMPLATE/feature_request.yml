@@ -1,0 +1,22 @@
+name: Feature request
+description: Suggest a change to the local fleet view.
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What would this help you do?
+      description: Describe a concrete situation in your workflow.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Suggested behavior
+      description: Tell us what you would expect to see or do in the app.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you have tried
+      description: Optional. Screenshots or sketches with fictional data are welcome.

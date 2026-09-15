@@ -1,11 +1,7 @@
 #!/usr/bin/env bun
 // Superset Agent Fleet — serves the world at http://localhost:4400 and pushes each poll over SSE.
 //
-// The port is fixed and deliberately outside the per-slot dev ranges (see
-// .claude/rules/dev-stack.md): every worktree's stack is a different stack, but there is only
-// one fleet, so a second Superset Agent Fleet would draw the same world twice on two ports. Starting one
-// while another is up therefore reports the running URL and exits 0 — the orchestrator can call
-// `start` unconditionally at the top of a run without guarding it.
+// Run in the foreground with `bun start`; use `bun run doctor` for setup diagnostics.
 
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -15,12 +11,20 @@ import { World } from './lib/world.js';
 import { cliVersion, transportNote, useDirect } from './lib/superset.js';
 import { Weather } from './lib/weather.js';
 import { Reporter } from './lib/report.js';
+import { readConfig, healthURL, isFleetHealth } from './lib/config.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = join(HERE, 'public');
 
-const PORT = Number(process.env.AGENT_FLEET_PORT ?? 4400);
-const POLL_MS = Number(process.env.AGENT_FLEET_POLL_MS ?? 2500);
+let config;
+try {
+  config = readConfig();
+} catch (error) {
+  console.error(`Configuration error: ${error.message}. Run bun run doctor.`);
+  process.exit(1);
+}
+const PORT = config.port;
+const POLL_MS = config.pollMs;
 
 /**
  * Which interface to listen on. Loopback unless told otherwise, which is a TIGHTENING: Bun
@@ -32,13 +36,13 @@ const POLL_MS = Number(process.env.AGENT_FLEET_POLL_MS ?? 2500);
  * Set it to the address you mean, never `0.0.0.0`: on a host whose firewall is inactive that
  * also serves the fleet on its public IP.
  */
-const BIND = process.env.AGENT_FLEET_BIND ?? '127.0.0.1';
+const BIND = config.bind;
 
 /** Required on every /api route once set. EventSource cannot send headers, so `?token=` counts. */
 const TOKEN = process.env.AGENT_FLEET_TOKEN ?? '';
 
 /**
- * Other hosts' instances, comma-separated (`http://preben-dev-vm:4400?token=…`). The browser
+ * Other hosts' instances, comma-separated (`http://dev-vm:4400?token=…`). The browser
  * merges them with this one; nothing server-side ever calls them, because a server that read
  * its peers would be back to describing a machine it cannot see.
  */
@@ -49,13 +53,8 @@ const PEERS = (process.env.AGENT_FLEET_PEERS ?? '')
 
 const isLoopback = (host) => host === '127.0.0.1' || host === '::1' || host === 'localhost';
 
-/**
- * `fleet` reads every host it can see, which is what a single instance has always done and is
- * still right when there is only one. `host` reads only the machine it runs on, which is what
- * an instance does once its peers are covering the others — and is the whole point: reading
- * your own machine is a millisecond and gives you the local files too.
- */
-const SCOPE = process.env.AGENT_FLEET_SCOPE === 'host' ? 'host' : 'fleet';
+// Local setup reads this machine. Internal collectors can opt into account-wide scope.
+const SCOPE = config.scope;
 
 /**
  * Whose restaurant this machine's sessions fill. The public view learns it from the key map;
@@ -70,7 +69,7 @@ const hideToken = (url) => url.replace(/([?&]token=)[^&]*/, '$1…');
 // Each poll spawns a `superset` process per terminal. With nobody watching, that is work for
 // no one, so an unwatched server idles down to this and wakes the moment a page connects —
 // which is what lets it run as a login service without being a permanent tax on the machine.
-const IDLE_POLL_MS = Number(process.env.AGENT_FLEET_IDLE_POLL_MS ?? 20_000);
+const IDLE_POLL_MS = config.idlePollMs;
 
 /**
  * How often an open stream is nudged when there is no snapshot to send.
@@ -131,13 +130,8 @@ const TRANSCRIPT_ROOT =
  * watched from Bergen or from a VM in Frankfurt still shows the office's sky. The zone is what
  * the header clock reads in; the coordinates are what the forecast is fetched for.
  */
-const PLACE = {
-  name: process.env.AGENT_FLEET_PLACE ?? 'Oslo',
-  tz: process.env.AGENT_FLEET_TZ ?? 'Europe/Oslo',
-  lat: Number(process.env.AGENT_FLEET_LAT ?? 59.9139),
-  lon: Number(process.env.AGENT_FLEET_LON ?? 10.7522),
-};
-const weather = new Weather(PLACE);
+const PLACE = config.place;
+const weather = config.weatherEnabled ? new Weather(PLACE) : null;
 
 const world = new World(STATE_PATH, LOG_PATH, TRANSCRIPT_ROOT, SCOPE);
 await world.load();
@@ -310,7 +304,17 @@ function cors(request, response) {
 }
 
 async function handle(request) {
-  const { pathname } = new URL(request.url);
+  const url = new URL(request.url);
+  const { pathname } = url;
+  // A website must not read a local terminal viewer by resolving its own hostname to
+  // loopback. Browser writes without a token must also originate from this page.
+  if (isLoopback(BIND) && !isLoopback(url.hostname.replace(/^\[|\]$/g, ''))) {
+    return new Response('forbidden host', { status: 403 });
+  }
+  const origin = request.headers.get('origin');
+  if (pathname.startsWith('/api/') && !TOKEN && origin && origin !== url.origin) {
+    return new Response('forbidden origin', { status: 403 });
+  }
   if (pathname.startsWith('/api/') && !authorized(request)) {
     return new Response('unauthorized', { status: 401 });
   }
@@ -325,6 +329,7 @@ async function handle(request) {
     return cors(
       request,
       Response.json({
+        service: 'superset-agent-fleet',
         ok: true,
         tick: latest.tick,
         agents: latest.agents.length,
@@ -337,7 +342,15 @@ async function handle(request) {
     );
   }
   // The sky over the town: the place, and the forecast for it, from the server's kept copy.
-  if (pathname === '/api/weather') return cors(request, Response.json(await weather.current()));
+  if (pathname === '/api/weather')
+    return cors(
+      request,
+      Response.json(
+        weather
+          ? await weather.current()
+          : { place: PLACE, weather: null, error: null, disabled: true },
+      ),
+    );
   // The one write the browser makes: a person putting a session behind the bar by hand, or
   // taking it back out. Pins are this instance's — the page merges every host's hubs, so a pin
   // held here covers an agent drawn by any of them — and the change is pushed to every open
@@ -376,17 +389,21 @@ async function handle(request) {
 
 async function alreadyRunning() {
   try {
-    const res = await fetch(`http://127.0.0.1:${PORT}/api/health`, {
+    const res = await fetch(healthURL(config), {
+      headers: TOKEN ? { authorization: `Bearer ${TOKEN}` } : {},
       signal: AbortSignal.timeout(1500),
+      redirect: 'error',
     });
-    return res.ok && (await res.json()).ok === true;
+    return res.ok && isFleetHealth(await res.json());
   } catch {
     return false;
   }
 }
 
 if (await alreadyRunning()) {
-  console.log(`Superset Agent Fleet is already running — http://localhost:${PORT}`);
+  console.log(
+    `Superset Agent Fleet is already running: ${healthURL(config).replace('/api/health', '')}`,
+  );
   process.exit(0);
 }
 
@@ -425,7 +442,7 @@ Bun.serve({
   error: () => new Response('error', { status: 500 }),
 });
 console.log(
-  `Superset Agent Fleet  http://${BIND}:${PORT}   (${version}, polling every ${POLL_MS}ms)`,
+  `Superset Agent Fleet  ${healthURL(config).replace('/api/health', '')}   (${version}, polling every ${POLL_MS}ms)`,
 );
 // Which transport won is the difference between a millisecond and half a second per read, so
 // it is said out loud rather than left to be inferred from how sluggish the world feels. The
@@ -437,5 +454,5 @@ console.log(`  scope: ${SCOPE === 'host' ? 'this host only' : 'the whole fleet'}
 if (PEERS.length) console.log(`  merging with: ${PEERS.map(hideToken).join(', ')}`);
 if (TOKEN) console.log('  token required on /api');
 if (process.env.AGENT_FLEET_PUSH_URL && process.env.AGENT_FLEET_PUSH_KEY)
-  console.log(`  reporting to: ${process.env.AGENT_FLEET_PUSH_URL}`);
+  console.log('  internal cloud reporting is enabled');
 pollForever();

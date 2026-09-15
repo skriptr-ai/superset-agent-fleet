@@ -1,0 +1,32 @@
+name: Bug report
+description: Something in the local fleet view is broken.
+body:
+  - type: markdown
+    attributes:
+      value: 'For security vulnerabilities, follow SECURITY.md. Review logs and screenshots for private conversations, paths, and credentials before attaching them.'
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Include what you expected to happen.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: How can we reproduce it?
+      description: A small example with fictional data helps. Does it happen in bun run demo, the live view, or both?
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Bun version, Superset version, browser, and repository revision. Include only reviewed, redacted doctor output.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Screenshots or logs
+      description: Optional. Remove real conversation text, private project names, local paths, and tokens.

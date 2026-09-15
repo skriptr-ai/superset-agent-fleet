@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
-# Stop the login service and remove it. The repo and the state file are left alone.
+# Stop the macOS login service and remove its definition. Keep the repo and saved state.
 set -euo pipefail
+[[ "$(uname -s)" == Darwin ]] || { echo 'uninstall: use service/uninstall-linux.sh on Linux' >&2; exit 1; }
 label="ai.skriptr.superset-agent-fleet"
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
 rm -f "$HOME/Library/LaunchAgents/$label.plist"
 
-# Only our own symlinks: a wrapper someone installed by hand, or by curl, is a real file and
-# is theirs to keep.
+# Remove only links to this checkout installed by earlier versions of install.sh.
 for wrapper in "$HOME/.local/bin/superset-send" "$HOME/.claude/skills/superset/bin/superset-send"; do
-  [[ -L "$wrapper" ]] && rm -f "$wrapper"
+  if [[ -L "$wrapper" && "$(readlink "$wrapper")" == "$here/bin/superset-send" ]]; then
+    rm -f "$wrapper"
+  fi
 done
-
-echo "Superset Agent Fleet login service removed."
+echo 'Superset Agent Fleet login service removed.'
