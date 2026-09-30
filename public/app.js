@@ -14,7 +14,7 @@ import {
 } from './draw.js';
 import { DEFAULT_PLACE } from './daylight.js';
 import { patchHTML } from './dom.js';
-import { connectionState, validSnapshot } from './ui-state.js';
+import { connectionState, isLiveEvent, validSnapshot } from './ui-state.js';
 
 const scene = new Scene(document.getElementById('world'));
 const demo = window.fleetDemo;
@@ -855,7 +855,7 @@ function merged() {
     }
     for (const event of snapshot.events ?? []) {
       const id = `${key}#${event.id}`;
-      if (!events.has(id)) fresh.push({ ...event, id });
+      if (!events.has(id) && isLiveEvent(event, snapshot.at)) fresh.push({ ...event, id });
       events.set(id, { ...event, id });
     }
     tick = Math.max(tick, snapshot.tick ?? 0);
@@ -914,8 +914,9 @@ function redraw() {
   applyFilter();
   updateScene();
   // The stream replays its backlog on connect so threads have history; animating all of
-  // it would fire a minute of traffic at once, so only live ticks reach the scene.
-  if (!firstSnapshot) scene.addEvents(world.fresh.filter((e) => !e.replay));
+  // it would fire a minute of traffic at once, so only live ticks reach the scene. `fresh`
+  // already holds only events that just happened; see isLiveEvent.
+  if (!firstSnapshot) scene.addEvents(world.fresh);
   if (sources.size) firstSnapshot = false;
   renderHeader(world);
   renderPanel();
