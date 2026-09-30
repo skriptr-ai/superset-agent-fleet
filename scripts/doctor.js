@@ -78,6 +78,60 @@ export async function checkHealth(config, token = '', fetcher = fetch) {
   }
 }
 
+const plural = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
+
+/**
+ * Other hosts are counted, never named: host names can be private, and doctor output gets pasted
+ * into issues. `superset hosts list` shows the names to the person running it.
+ */
+export async function remoteHosts(command, cli, local, scope) {
+  const guide = 'See docs/remote-hosts.md.';
+  const res = await command(cli, ['hosts', 'list', '--json']);
+  let rows = null;
+  try {
+    const start = res.stdout?.search(/[[{]/) ?? -1;
+    const data = res.ok && start >= 0 ? JSON.parse(res.stdout.slice(start)) : null;
+    const list = Array.isArray(data) ? data : data?.hosts;
+    if (Array.isArray(list) && list.every((row) => typeof row?.id === 'string')) rows = list;
+  } catch {
+    /* Unknown output cannot list hosts. */
+  }
+  if (!rows) return [{ status: 'warn', message: `Could not list Superset hosts. ${guide}` }];
+  const others = rows.filter(
+    (host) => host.id !== local?.hostId && !(local?.hostName && host.name === local.hostName),
+  );
+  // Same rule as lib/superset.js: only an explicit "no" or false is offline.
+  const online = others.filter((host) => host.online !== 'no' && host.online !== false).length;
+  const offline = others.length - online;
+  const checks = [];
+  if (scope === 'fleet') {
+    checks.push(
+      others.length
+        ? { status: 'ok', message: `Fleet scope: ${plural(online, 'other host')} online` }
+        : {
+            status: 'warn',
+            message: `AGENT_FLEET_SCOPE=fleet, but this account sees no other Superset hosts. ${guide}`,
+          },
+    );
+    if (offline)
+      checks.push({
+        status: 'warn',
+        message: `${plural(offline, 'other host')} offline; their sessions cannot be read. ${guide}`,
+      });
+  } else if (online) {
+    checks.push({
+      status: 'warn',
+      message: `${plural(online, 'other Superset host')} online, but the default scope shows only this machine. Set AGENT_FLEET_SCOPE=fleet to include them. ${guide}`,
+    });
+  } else {
+    checks.push({
+      status: 'ok',
+      message: `No other Superset hosts online${offline ? ` (${offline} offline)` : ''}; showing this machine`,
+    });
+  }
+  return checks;
+}
+
 export async function diagnose({
   env = process.env,
   command = runCommand,
@@ -134,10 +188,12 @@ export async function diagnose({
     );
     const status = await command(cli, ['status', '--json']);
     let running = false;
+    let local = null;
     try {
       const start = status.stdout?.indexOf('{') ?? -1;
       const data = start >= 0 ? JSON.parse(status.stdout.slice(start)) : null;
       running = status.ok && data?.running === true && data?.healthy !== false;
+      local = data;
     } catch {
       /* Unknown output cannot prove the host is running. */
     }
@@ -147,6 +203,10 @@ export async function diagnose({
         ? 'Superset host service is running'
         : 'Could not verify a running, healthy Superset host. Open Superset and run superset status.',
     );
+    if (running) {
+      for (const check of await remoteHosts(command, cli, local, config?.scope ?? 'host'))
+        add(check.status, check.message);
+    }
   }
   const count = await manifests(env.SUPERSET_HOME_DIR || join(homedir(), '.superset'));
   if (count > 1)

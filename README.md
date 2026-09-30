@@ -11,7 +11,7 @@ When someone needs you, they raise a hand.
 Run it on localhost with your own Superset account. No hosted account, database,
 or API key is needed for Agent Fleet itself.
 
-[Quickstart](#quickstart) · [Local setup](docs/local-setup.md) · [How it works](docs/architecture.md) · [Contributing](CONTRIBUTING.md)
+[Quickstart](#quickstart) · [Local setup](docs/local-setup.md) · [Remote hosts](docs/remote-hosts.md) · [How it works](docs/architecture.md) · [Contributing](CONTRIBUTING.md)
 
 ## Quickstart
 
@@ -30,6 +30,9 @@ Open **http://localhost:4400**. Stop the server with `Ctrl+C`.
 There are no runtime packages to install and no build step. The default view reads
 this machine's Superset workspaces. Start an agent in Superset to give it a seat.
 An account with no agent sessions gets an empty restaurant.
+
+Agents on a VM or another computer do not appear by default. See
+[remote hosts](docs/remote-hosts.md) to include them.
 
 If setup gets stuck:
 

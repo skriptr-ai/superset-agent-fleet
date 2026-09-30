@@ -2,16 +2,24 @@ import { describe, expect, test } from 'bun:test';
 import { checkHealth, diagnose } from '../scripts/doctor.js';
 import { readConfig } from '../lib/config.js';
 
-const base = {
-  env: {},
-  version: '99.0.0',
-  command: async (_, args) => ({
+const laptop = { id: 'fictional-laptop-id', name: 'fictional-laptop', online: 'yes' };
+
+function answers(hosts = [laptop]) {
+  return async (_, args) => ({
     ok: true,
     stdout:
       args[0] === 'auth'
         ? JSON.stringify({ userId: 'fictional-user', organizationId: 'fictional-org' })
-        : JSON.stringify({ running: true, healthy: true }),
-  }),
+        : args[0] === 'hosts'
+          ? JSON.stringify(hosts)
+          : JSON.stringify({ running: true, healthy: true, hostId: laptop.id }),
+  });
+}
+
+const base = {
+  env: {},
+  version: '99.0.0',
+  command: answers(),
   manifests: async () => 1,
   health: async () => 'free',
 };
@@ -105,5 +113,72 @@ describe('doctor', () => {
       server.stop(true);
     }
     expect(await checkHealth(config)).toBe('free');
+  });
+
+  describe('remote hosts', () => {
+    const vm = { id: 'fictional-vm-id', name: 'fictional-vm', online: 'yes' };
+    const asleep = { id: 'fictional-asleep-id', name: 'fictional-asleep', online: 'no' };
+    const find = (checks, text) => checks.find((check) => check.message.includes(text));
+
+    test('host scope with another host online suggests fleet scope', async () => {
+      const checks = await diagnose({ ...base, command: answers([laptop, vm]) });
+      expect(find(checks, 'AGENT_FLEET_SCOPE=fleet')?.status).toBe('warn');
+      expect(checks.some((check) => check.status === 'fail')).toBe(false);
+    });
+
+    test('this machine alone is not a remote host, matched by id or name', async () => {
+      const checks = await diagnose(base);
+      expect(find(checks, 'No other Superset hosts online')?.status).toBe('ok');
+      const renamed = { ...laptop, id: 'another-id' };
+      const byName = await diagnose({
+        ...base,
+        command: async (cli, args) =>
+          args[0] === 'status'
+            ? { ok: true, stdout: JSON.stringify({ running: true, hostName: laptop.name }) }
+            : answers([renamed])(cli, args),
+      });
+      expect(find(byName, 'No other Superset hosts online')?.status).toBe('ok');
+    });
+
+    test('fleet scope counts online hosts and warns about offline ones', async () => {
+      const checks = await diagnose({
+        ...base,
+        env: { AGENT_FLEET_SCOPE: 'fleet' },
+        command: answers([laptop, vm, asleep]),
+      });
+      expect(find(checks, '1 other host online')?.status).toBe('ok');
+      expect(find(checks, '1 other host offline')?.status).toBe('warn');
+    });
+
+    test('fleet scope with no other hosts is a warning', async () => {
+      const checks = await diagnose({ ...base, env: { AGENT_FLEET_SCOPE: 'fleet' } });
+      expect(find(checks, 'sees no other Superset hosts')?.status).toBe('warn');
+    });
+
+    test('a failed host list warns without failing, and host names stay out of output', async () => {
+      const failed = await diagnose({
+        ...base,
+        command: async (cli, args) => (args[0] === 'hosts' ? { ok: false } : answers()(cli, args)),
+      });
+      expect(find(failed, 'Could not list Superset hosts')?.status).toBe('warn');
+      expect(failed.some((check) => check.status === 'fail')).toBe(false);
+      const listed = await diagnose({ ...base, command: answers([laptop, vm, asleep]) });
+      expect(JSON.stringify(listed)).not.toContain('fictional-vm');
+      expect(JSON.stringify(listed)).not.toContain('fictional-asleep');
+    });
+
+    test('a stopped host service skips the host list', async () => {
+      const calls = [];
+      await diagnose({
+        ...base,
+        command: async (cli, args) => {
+          calls.push(args[0]);
+          return args[0] === 'status'
+            ? { ok: true, stdout: JSON.stringify({ running: false }) }
+            : answers()(cli, args);
+        },
+      });
+      expect(calls).not.toContain('hosts');
+    });
   });
 });

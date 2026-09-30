@@ -96,20 +96,10 @@ within that limit.
 
 ### Virtual machines and sandboxes
 
-The collector observes hosts available through your Superset account. A VM or
-sandbox must run a Superset host with sessions visible through the CLI before
-Agent Fleet can discover them. Creating an arbitrary container or sandbox does
-not automatically make its processes Superset sessions.
-
-Use `AGENT_FLEET_SCOPE=fleet` on the Mac to read those hosts while keeping the page
-on localhost. A collector running inside a VM can instead use the default `host`
-scope for that VM alone. Local transcript enrichment only reads files on the
-collector's own machine; remote status and visible commands come from terminal
-reads. Idle and exited remote sessions are revisited in a bounded rotation.
-
-Read-only terminal access was verified against an existing development VM on
-September 15, 2026. New sandbox provisioning and live Linux service installation
-have not been verified.
+Agents on a VM, a second computer or a sandbox appear only when that machine runs
+a Superset host visible to your account, and only in `fleet` scope. See
+[remote hosts](remote-hosts.md) for the setup on both sides, the choice between
+watching from your laptop and running the viewer on the VM, and troubleshooting.
 
 ## Privacy and local storage
 
@@ -226,6 +216,7 @@ filter in the top bar. Shell-only and archived workspaces do not get seats.
 
 The default scope is this machine. For a workspace on another host you own,
 use `AGENT_FLEET_SCOPE=fleet`. Offline or inaccessible hosts cannot be read.
+See [remote hosts](remote-hosts.md#troubleshooting).
 
 ### A session says "last seen" or "awaiting updates"
 
