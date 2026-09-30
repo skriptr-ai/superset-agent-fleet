@@ -148,7 +148,6 @@ const SERVE_PAUSE_MS = 900;
 const GLANCE_MS = 950;
 const BUBBLE_MS = 7000;
 const BUBBLE_STACK = 3; // bubbles kept over one head; older ones make room
-const TOAST_MS = 6500;
 const GREET_MS = 1400;
 const WAITERS = 3;
 const PICKUP_MS = 500;
@@ -194,7 +193,6 @@ export class Scene {
     this.hitboxes = [];
     this.glances = [];
     this.bubbles = new Map();
-    this.toasts = [];
     this.selectedId = null;
     this.hoverId = null;
     this.hoverRoom = null;
@@ -879,7 +877,6 @@ export class Scene {
         this.#say(event.toId, event, now);
       }
     }
-    if (this.toasts.length > 4) this.toasts.splice(0, this.toasts.length - 4);
     for (const room of this.rooms) {
       if (room.orders.length > 12) room.orders.splice(0, room.orders.length - 12);
     }
@@ -1000,7 +997,6 @@ export class Scene {
     stack.push({ text: event.text, kind: event.kind, event, start: at, until: at + BUBBLE_MS });
     while (stack.length > BUBBLE_STACK) stack.shift();
     this.bubbles.set(whoId, stack);
-    this.toasts.push({ event, start: at, until: at + TOAST_MS });
   }
 
   /** `PT-559 ← You` / `PT-559 → You`: who is talking to whom, by issue key. */
@@ -1529,7 +1525,6 @@ export class Scene {
     this.#drawLabels(ctx, byId);
     this.#drawBubbles(ctx, t, byId);
     this.#drawTooltip(ctx, byId);
-    this.#drawToasts(ctx, byId, t);
     if (this.metrics) this.metrics.chrome.push(performance.now() - worldDone);
   }
 
@@ -2314,48 +2309,6 @@ export class Scene {
       ctx.fillText(row.text, x + 13, y + 16 + i * 17);
     });
     ctx.restore();
-  }
-
-  #drawToasts(ctx, byId, t) {
-    this.toasts = this.toasts.filter((toast) => t < toast.until);
-    const live = this.toasts.filter((toast) => t >= toast.start).slice(-3);
-    const w = this.canvas.clientWidth;
-    const h = this.canvas.clientHeight;
-    let bottom = h - 56;
-    for (let i = live.length - 1; i >= 0; i--) {
-      const toast = live[i];
-      const { event } = toast;
-      const from = event.fromId ? (byId.get(event.fromId)?.name ?? 'someone') : 'You';
-      const to = event.toId ? (byId.get(event.toId)?.name ?? 'someone') : 'the kitchen';
-      const header =
-        event.kind === 'report'
-          ? `${short(from)}  sent word back`
-          : `${short(from)}  →  ${short(to)}`;
-      ctx.save();
-      ctx.font = '500 12px ui-sans-serif, system-ui, sans-serif';
-      const lines = wrapText(ctx, event.text, 460, 2);
-      const width = 520;
-      const height = 34 + lines.length * 16;
-      const x = w / 2 - width / 2;
-      const y = bottom - height;
-      const fade = Math.min(1, (toast.until - t) / 500, (t - toast.start) / 250);
-      ctx.globalAlpha = Math.max(0, fade) * (i === live.length - 1 ? 1 : 0.55);
-      ctx.fillStyle = 'rgba(11,15,22,0.96)';
-      ctx.strokeStyle = KIND_COLOR[event.kind] ?? KIND_COLOR.send;
-      ctx.lineWidth = 1.2;
-      roundRect(ctx, x, y, width, height, 10);
-      ctx.fill();
-      ctx.stroke();
-      ctx.fillStyle = KIND_COLOR[event.kind] ?? KIND_COLOR.send;
-      ctx.font = '700 10.5px ui-monospace, SFMono-Regular, monospace';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(header, x + 14, y + 15);
-      ctx.fillStyle = '#eef3f9';
-      ctx.font = '500 12px ui-sans-serif, system-ui, sans-serif';
-      lines.forEach((line, k) => ctx.fillText(line, x + 14, y + 34 + k * 16));
-      ctx.restore();
-      bottom = y - 8;
-    }
   }
 }
 
